@@ -1,0 +1,140 @@
+{
+  "last_node_id": 3,
+  "last_link_id": 2,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LlamaCppLoader",
+      "pos": [40, 120],
+      "size": [340, 250],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "LLAMA_MODEL",
+          "links": [1],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LlamaCppLoader"
+      },
+      "widgets_values": [
+        "qwen2.5-7b-instruct-q4_k_m.gguf",
+        -1,
+        4096,
+        0,
+        512,
+        false,
+        "auto",
+        1,
+        true,
+        false,
+        0,
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LlamaCppChat",
+      "pos": [430, 120],
+      "size": [420, 400],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "LLAMA_MODEL",
+          "link": 1
+        },
+        {
+          "name": "messages",
+          "type": "LLAMA_MESSAGES",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "sampling",
+          "type": "LLAMA_SAMPLING",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "grammar",
+          "type": "LLAMA_GRAMMAR",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": [2],
+          "slot_index": 0
+        },
+        {
+          "name": "messages",
+          "type": "LLAMA_MESSAGES",
+          "links": null
+        },
+        {
+          "name": "tokens",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LlamaCppChat"
+      },
+      "widgets_values": [
+        "You are a prompt engineer for image generation models. Answer with a single prompt and nothing else.",
+        "A cinematic portrait of a lighthouse keeper during a storm.",
+        512,
+        0.7,
+        0.95,
+        -1,
+        "randomize"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "LlamaCppPreviewText",
+      "pos": [900, 120],
+      "size": [400, 260],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LlamaCppPreviewText"
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "LLAMA_MODEL"],
+    [2, 2, 0, 3, 0, "STRING"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

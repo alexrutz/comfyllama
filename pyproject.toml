@@ -1,0 +1,16 @@
+[project]
+name = "comfyllama"
+version = "1.0.0"
+description = "llama.cpp (GGUF) text and vision nodes for ComfyUI"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = ["llama-cpp-python>=0.2.79"]
+
+[project.urls]
+Repository = "https://github.com/alexrutz/comfyllama"
+
+[tool.comfy]
+PublisherId = "alexrutz"
+DisplayName = "comfyllama"
+Icon = ""

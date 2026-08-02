@@ -1,0 +1,5 @@
+# The CPU wheel. For GPU acceleration install a matching build instead, e.g.
+#   CUDA 12.4: pip install llama-cpp-python --extra-index-url \
+#              https://abetlen.github.io/llama-cpp-python/whl/cu124
+#   Metal:     CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+llama-cpp-python>=0.2.79
