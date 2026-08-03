@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 CATEGORY = "llama.cpp"
+CATEGORY_SERVER = "llama.cpp/server"
 CATEGORY_ADVANCED = "llama.cpp/advanced"
 CATEGORY_UTILS = "llama.cpp/utils"
 

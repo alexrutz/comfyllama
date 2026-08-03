@@ -5,6 +5,8 @@ from __future__ import annotations
 from .generation import (LlamaCppChat, LlamaCppComplete, LlamaCppGrammar,
                          LlamaCppSampling, LlamaCppVisionChat)
 from .loaders import LlamaCppLoader, LlamaCppUnload, LlamaCppVisionLoader
+from .remote import (LlamaServerChat, LlamaServerComplete, LlamaServerConnect,
+                     LlamaServerInfo, LlamaServerTokenCount, LlamaServerVisionChat)
 from .utils import (LlamaCppMessage, LlamaCppMessagesToText, LlamaCppPreviewText,
                     LlamaCppPromptTemplate, LlamaCppTokenCount)
 
@@ -22,6 +24,12 @@ NODE_CLASS_MAPPINGS = {
     "LlamaCppPromptTemplate": LlamaCppPromptTemplate,
     "LlamaCppTokenCount": LlamaCppTokenCount,
     "LlamaCppPreviewText": LlamaCppPreviewText,
+    "LlamaServerConnect": LlamaServerConnect,
+    "LlamaServerChat": LlamaServerChat,
+    "LlamaServerVisionChat": LlamaServerVisionChat,
+    "LlamaServerComplete": LlamaServerComplete,
+    "LlamaServerTokenCount": LlamaServerTokenCount,
+    "LlamaServerInfo": LlamaServerInfo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -38,6 +46,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LlamaCppPromptTemplate": "Prompt Template (llama.cpp)",
     "LlamaCppTokenCount": "Token Count (llama.cpp)",
     "LlamaCppPreviewText": "Preview Text (llama.cpp)",
+    "LlamaServerConnect": "Connect to llama-server",
+    "LlamaServerChat": "Chat (llama-server)",
+    "LlamaServerVisionChat": "Vision Chat (llama-server)",
+    "LlamaServerComplete": "Text Completion (llama-server)",
+    "LlamaServerTokenCount": "Token Count (llama-server)",
+    "LlamaServerInfo": "Server Info (llama-server)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

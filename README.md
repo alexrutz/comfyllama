@@ -4,7 +4,14 @@ llama.cpp nodes for ComfyUI — run GGUF language and vision models directly in
 your graph. Write or rewrite prompts with a local LLM, caption images with a
 multimodal model, and force structured JSON output, all without an external API.
 
+Models can run **in the ComfyUI process** (via `llama-cpp-python`) or on a
+**running `llama-server`** reached over HTTP. Both sets of nodes share the same
+sampler, grammar and chat-history types, so you can swap between them without
+rebuilding the graph.
+
 ## Nodes
+
+### In-process (needs `llama-cpp-python`)
 
 | Node | What it does |
 | --- | --- |
@@ -22,17 +29,29 @@ multimodal model, and force structured JSON output, all without an external API.
 | **Preview Text (llama.cpp)** | Shows the generated text on the node and passes it through. |
 | **Unload LLM (llama.cpp)** | Frees the model so the VRAM goes back to your diffusion models. |
 
+### Remote (needs only a running `llama-server`)
+
+| Node | What it does |
+| --- | --- |
+| **Connect to llama-server** | URL, timeout, optional API key and model name. Checks `/health` so a wrong URL fails immediately. |
+| **Chat (llama-server)** | Chat completion via `/v1/chat/completions`, with the updated history. |
+| **Vision Chat (llama-server)** | Uploads an `IMAGE` batch to a server started with `--mmproj`. |
+| **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
+| **Token Count (llama-server)** | Counts tokens via `/tokenize`. |
+| **Server Info (llama-server)** | Model name, context size and available models as JSON. |
+
 ## Install
 
-Clone into `ComfyUI/custom_nodes/` and install `llama-cpp-python` **into the same
-Python environment ComfyUI runs in**:
+Clone into `ComfyUI/custom_nodes/`:
 
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/alexrutz/comfyllama.git
 ```
 
-Then pick the build that matches your hardware:
+The **llama-server nodes work right away** — they only use the standard library.
+The in-process nodes additionally need `llama-cpp-python` **in the same Python
+environment ComfyUI runs in**; pick the build that matches your hardware:
 
 ```bash
 # CPU
@@ -55,11 +74,37 @@ python_embeded\python.exe -m pip install llama-cpp-python
 Restart ComfyUI afterwards. If the binding is missing, the nodes still load and
 tell you exactly what to install when you run them.
 
+## Using a running llama-server
+
+Start the server yourself and point the **Connect to llama-server** node at it:
+
+```bash
+llama-server -m model.gguf --host 127.0.0.1 --port 8080 -ngl 99
+# multimodal:
+llama-server -m llava.gguf --mmproj mmproj.gguf --host 127.0.0.1 --port 8080
+```
+
+Worth doing when you want the LLM to stay loaded between runs, need it on
+another machine, want several ComfyUI instances (or other tools) to share one
+model, or simply want the model out of ComfyUI's process. The nodes speak both
+the OpenAI-compatible `/v1/chat/completions` API and llama.cpp's native
+`/completion`, so llama.cpp's samplers, GBNF grammars and JSON schemas all work.
+
+Notes:
+
+- The URL may include a trailing `/v1` — it is stripped. `model` can stay on
+  `auto`, which asks the server what it has loaded.
+- Requests to `localhost`/`127.0.0.1` deliberately bypass any `HTTP_PROXY` set
+  in the environment.
+- `timeout` is per request; raise it for long generations on slow hardware.
+- Set `api_key` only if the server was started with `--api-key`.
+- Cancelling in ComfyUI aborts the stream immediately.
+
 ## Models
 
-Put `.gguf` files into `ComfyUI/models/llm/`. The folder is created on first
-start, and `models/LLM`, `models/gguf` and `models/llama` are picked up too if
-you already use them. Multimodal projectors can live in `models/llm/` or
+For the in-process nodes, put `.gguf` files into `ComfyUI/models/llm/`. The
+folder is created on first start, and `models/LLM`, `models/gguf` and
+`models/llama` are picked up too if you already use them. Multimodal projectors can live in `models/llm/` or
 `models/mmproj/`. Both folder keys work in `extra_model_paths.yaml`:
 
 ```yaml

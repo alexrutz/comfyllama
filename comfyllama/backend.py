@@ -93,7 +93,7 @@ def free_comfy_memory() -> None:
         pass
 
 
-def _progress_bar(total: int):
+def progress_bar(total: int):
     if total <= 0:
         return None
     try:
@@ -412,7 +412,7 @@ def _consume(chunks: Iterator[Dict[str, Any]], extract: Callable[[Dict[str, Any]
     Streaming is used even though nodes return the full string: it is what
     makes the ComfyUI cancel button responsive and drives the progress bar.
     """
-    progress = _progress_bar(max_tokens or 0)
+    progress = progress_bar(max_tokens or 0)
     pieces: List[str] = []
     finish_reason = ""
     try:
