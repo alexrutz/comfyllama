@@ -17,9 +17,9 @@ rebuilding the graph.
 | --- | --- |
 | **Load LLM (llama.cpp)** | Loads a GGUF text model. GPU offload, context size, threads, chat template. |
 | **Load Vision LLM (llama.cpp)** | Loads a GGUF model plus its `mmproj` projector (LLaVA, MiniCPM-V, moondream, …). |
-| **Chat (llama.cpp)** | Chat completion using the model's chat template. Returns the text and the updated history. |
-| **Text Completion (llama.cpp)** | Raw completion, no chat template applied. |
-| **Vision Chat (llama.cpp)** | Sends an `IMAGE` (or a whole batch) plus a prompt to a multimodal model. |
+| **Chat (llama.cpp)** | System prompt, user prompt and a thinking switch. Returns `text`, `thinking` and the updated history. |
+| **Text Completion (llama.cpp)** | Raw completion, no chat template and no system prompt. |
+| **Vision Chat (llama.cpp)** | Sends an `IMAGE` (or a whole batch) plus a system and user prompt to a multimodal model. |
 | **Sampler Settings (llama.cpp)** | top_k, min_p, typical_p, repetition/presence/frequency penalties, Mirostat, stop sequences. |
 | **Grammar / JSON Output (llama.cpp)** | Constrains output to JSON, a JSON schema, or a custom GBNF grammar. |
 | **Chat Message (llama.cpp)** | Builds a conversation for multi-turn chats or few-shot prompting. |
@@ -34,7 +34,7 @@ rebuilding the graph.
 | Node | What it does |
 | --- | --- |
 | **Connect to llama-server** | URL, timeout, optional API key and model name. Checks `/health` so a wrong URL fails immediately. |
-| **Chat (llama-server)** | Chat completion via `/v1/chat/completions`, with the updated history. |
+| **Chat (llama-server)** | System prompt, user prompt and a thinking switch, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
 | **Vision Chat (llama-server)** | Uploads an `IMAGE` batch to a server started with `--mmproj`. |
 | **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
 | **Token Count (llama-server)** | Counts tokens via `/tokenize`. |
@@ -73,6 +73,36 @@ python_embeded\python.exe -m pip install llama-cpp-python
 
 Restart ComfyUI afterwards. If the binding is missing, the nodes still load and
 tell you exactly what to install when you run them.
+
+## Prompts and reasoning models
+
+All four chat nodes (in-process and remote) take a **`system`** prompt above the
+`prompt` field; leave it empty to send no system message. The two Text
+Completion nodes deliberately have none — they send the prompt verbatim with no
+chat template, so there are no roles to put a system message in. Use a Chat node
+if you want one. Every widget can also be driven from another node: drag a
+connection onto it, or right-click the node → *Convert widget to input* on older
+frontends.
+
+Chat nodes have a **`thinking`** switch and a separate **`thinking`** output:
+
+| | |
+| --- | --- |
+| `auto` | Sends nothing — the model's own default applies. |
+| `on` / `off` | Requests thinking explicitly. Remote: sent as `chat_template_kwargs {"enable_thinking": …}`, which is what Qwen3-style templates read. In-process: appended to the prompt as `/think` or `/no_think`, because llama-cpp-python renders the GGUF's template without forwarding arguments. Models whose template ignores the switch keep their default. |
+
+The chain of thought is always separated, whatever the switch is set to:
+
+- `text` — the answer with the reasoning removed.
+- `thinking` — the reasoning, from the server's `reasoning_content` field when
+  llama-server runs with `--reasoning-format deepseek`, otherwise parsed out of
+  `<think>` tags. Blocks the template opened itself and blocks cut off by
+  `max_tokens` are both handled.
+- `messages` — the history carries the answer only, so the reasoning is not fed
+  back into the next turn.
+
+To turn thinking off server-side regardless of the request, start llama-server
+with `--reasoning-budget 0`.
 
 ## Using a running llama-server
 

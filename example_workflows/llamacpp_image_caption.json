@@ -5,8 +5,14 @@
     {
       "id": 1,
       "type": "LlamaCppVisionLoader",
-      "pos": [40, 120],
-      "size": [360, 300],
+      "pos": [
+        40,
+        120
+      ],
+      "size": [
+        360,
+        300
+      ],
       "flags": {},
       "order": 0,
       "mode": 0,
@@ -15,7 +21,9 @@
         {
           "name": "model",
           "type": "LLAMA_MODEL",
-          "links": [1],
+          "links": [
+            1
+          ],
           "slot_index": 0
         }
       ],
@@ -42,8 +50,14 @@
     {
       "id": 2,
       "type": "LoadImage",
-      "pos": [40, 470],
-      "size": [320, 320],
+      "pos": [
+        40,
+        470
+      ],
+      "size": [
+        320,
+        320
+      ],
       "flags": {},
       "order": 1,
       "mode": 0,
@@ -52,7 +66,9 @@
         {
           "name": "IMAGE",
           "type": "IMAGE",
-          "links": [2],
+          "links": [
+            2
+          ],
           "slot_index": 0
         },
         {
@@ -64,13 +80,22 @@
       "properties": {
         "Node name for S&R": "LoadImage"
       },
-      "widgets_values": ["example.png", "image"]
+      "widgets_values": [
+        "example.png",
+        "image"
+      ]
     },
     {
       "id": 3,
       "type": "LlamaCppVisionChat",
-      "pos": [440, 120],
-      "size": [420, 420],
+      "pos": [
+        440,
+        120
+      ],
+      "size": [
+        420,
+        420
+      ],
       "flags": {},
       "order": 2,
       "mode": 0,
@@ -108,8 +133,15 @@
         {
           "name": "text",
           "type": "STRING",
-          "links": [3],
+          "links": [
+            3
+          ],
           "slot_index": 0
+        },
+        {
+          "name": "thinking",
+          "type": "STRING",
+          "links": null
         },
         {
           "name": "messages",
@@ -123,6 +155,7 @@
       "widgets_values": [
         "You are an assistant that describes images accurately.",
         "Describe this image in one detailed sentence suitable as an image generation prompt.",
+        "auto",
         256,
         0.4,
         0.95,
@@ -135,8 +168,14 @@
     {
       "id": 4,
       "type": "LlamaCppPreviewText",
-      "pos": [910, 120],
-      "size": [400, 260],
+      "pos": [
+        910,
+        120
+      ],
+      "size": [
+        400,
+        260
+      ],
       "flags": {},
       "order": 3,
       "mode": 0,
@@ -161,9 +200,30 @@
     }
   ],
   "links": [
-    [1, 1, 0, 3, 0, "LLAMA_MODEL"],
-    [2, 2, 0, 3, 1, "IMAGE"],
-    [3, 3, 0, 4, 0, "STRING"]
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "LLAMA_MODEL"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "IMAGE"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "STRING"
+    ]
   ],
   "groups": [],
   "config": {},

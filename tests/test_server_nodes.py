@@ -17,7 +17,7 @@ from test_nodes import HAVE_IMAGING  # noqa: F401  (also installs the ComfyUI st
 from comfyllama.nodes import remote
 from comfyllama.nodes.generation import LlamaCppGrammar, LlamaCppSampling
 from comfyllama.server import (LlamaServer, LlamaServerError, apply_grammar,
-                               build_payload, normalize_base_url)
+                               apply_thinking, build_payload, normalize_base_url)
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -87,10 +87,12 @@ class StubHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             if state["error"]:
                 return self._json({"error": {"message": state["error"]}}, 400)
-            return self._sse([
-                {"choices": [{"delta": {"content": piece}}]}
-                for piece in state["pieces"]
-            ] + [{"choices": [{"delta": {}, "finish_reason": "stop"}]}])
+            events = [{"choices": [{"delta": {"reasoning_content": piece}}]}
+                      for piece in state["reasoning_pieces"]]
+            events += [{"choices": [{"delta": {"content": piece}}]}
+                       for piece in state["pieces"]]
+            events.append({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+            return self._sse(events)
         if self.path == "/completion":
             if state["error"]:
                 return self._json({"error": {"message": state["error"]}}, 400)
@@ -113,6 +115,7 @@ class StubServer:
         self.httpd.state = {
             "requests": [],
             "pieces": ["Hello", " world"],
+            "reasoning_pieces": [],
             "models": ["stub-model"],
             "health": {"status": "ok"},
             "health_status": 200,
@@ -150,6 +153,7 @@ class ServerTestCase(unittest.TestCase):
     def setUp(self):
         self.stub.state["requests"].clear()
         self.stub.state["pieces"] = ["Hello", " world"]
+        self.stub.state["reasoning_pieces"] = []
         self.stub.state["error"] = None
         self.stub.state["health"] = {"status": "ok"}
         self.stub.state["health_status"] = 200
@@ -269,10 +273,11 @@ class TestConnectNode(ServerTestCase):
 
 class TestChatNode(ServerTestCase):
     def test_streamed_chunks_are_joined_and_history_returned(self):
-        text, messages = remote.LlamaServerChat().generate(
-            self.connect(), "be brief", "hi", max_tokens=16, temperature=0.2,
-            top_p=0.9, seed=5)
+        text, thinking, messages = remote.LlamaServerChat().generate(
+            self.connect(), "be brief", "hi", thinking="auto", max_tokens=16,
+            temperature=0.2, top_p=0.9, seed=5)
         self.assertEqual(text, "Hello world")
+        self.assertEqual(thinking, "")
         self.assertEqual([m["role"] for m in messages],
                          ["system", "user", "assistant"])
 
@@ -290,8 +295,8 @@ class TestChatNode(ServerTestCase):
             mirostat_tau=4.0, mirostat_eta=0.2, stop_sequences="END")[0]
         grammar = LlamaCppGrammar().build("json_object", "")[0]
         remote.LlamaServerChat().generate(
-            self.connect(), "", "hi", max_tokens=8, temperature=0.0, top_p=1.0,
-            seed=0, sampling=sampling, grammar=grammar)
+            self.connect(), "", "hi", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0, sampling=sampling, grammar=grammar)
 
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]
         self.assertEqual(sent["top_k"], 20)
@@ -302,9 +307,9 @@ class TestChatNode(ServerTestCase):
     def test_history_is_forwarded(self):
         history = [{"role": "user", "content": "first"},
                    {"role": "assistant", "content": "reply"}]
-        _, messages = remote.LlamaServerChat().generate(
-            self.connect(), "", "second", max_tokens=8, temperature=0.0, top_p=1.0,
-            seed=0, messages=history)
+        *_, messages = remote.LlamaServerChat().generate(
+            self.connect(), "", "second", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0, messages=history)
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]
         self.assertEqual([m["content"] for m in sent["messages"]],
                          ["first", "reply", "second"])
@@ -314,8 +319,8 @@ class TestChatNode(ServerTestCase):
         self.stub.state["error"] = "context shift is disabled"
         with self.assertRaises(LlamaServerError) as ctx:
             remote.LlamaServerChat().generate(
-                self.connect(), "", "hi", max_tokens=8, temperature=0.0, top_p=1.0,
-                seed=0)
+                self.connect(), "", "hi", thinking="auto", max_tokens=8,
+                temperature=0.0, top_p=1.0, seed=0)
         self.assertIn("context shift is disabled", str(ctx.exception))
         self.assertIn("400", str(ctx.exception))
 
@@ -327,15 +332,65 @@ class TestChatNode(ServerTestCase):
         try:
             with self.assertRaises(KeyboardInterrupt):
                 remote.LlamaServerChat().generate(
-                    self.connect(), "", "hi", max_tokens=64, temperature=0.0,
-                    top_p=1.0, seed=0)
+                    self.connect(), "", "hi", thinking="auto", max_tokens=64,
+                    temperature=0.0, top_p=1.0, seed=0)
         finally:
             mm.interrupted = False
 
 
+class TestThinking(ServerTestCase):
+    def test_switch_is_sent_as_chat_template_kwargs(self):
+        for mode, expected in (("on", True), ("off", False)):
+            with self.subTest(mode=mode):
+                self.stub.state["requests"].clear()
+                remote.LlamaServerChat().generate(
+                    self.connect(), "", "hi", thinking=mode, max_tokens=8,
+                    temperature=0.0, top_p=1.0, seed=0)
+                sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+                self.assertEqual(sent["chat_template_kwargs"],
+                                 {"enable_thinking": expected})
+
+    def test_auto_sends_nothing_so_the_template_decides(self):
+        remote.LlamaServerChat().generate(
+            self.connect(), "", "hi", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0)
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertNotIn("chat_template_kwargs", sent)
+
+    def test_reasoning_content_lands_on_the_thinking_output(self):
+        self.stub.state["reasoning_pieces"] = ["step one ", "step two"]
+        self.stub.state["pieces"] = ["The answer."]
+        text, thinking, messages = remote.LlamaServerChat().generate(
+            self.connect(), "", "hi", thinking="on", max_tokens=32,
+            temperature=0.0, top_p=1.0, seed=0)
+        self.assertEqual(text, "The answer.")
+        self.assertEqual(thinking, "step one step two")
+        self.assertEqual(messages[-1], {"role": "assistant", "content": "The answer."})
+
+    def test_think_tags_in_the_stream_are_split_out(self):
+        # A server without --reasoning-format leaves the tags in the content.
+        self.stub.state["pieces"] = ["<think>", "hmm", "</think>", "Answer."]
+        text, thinking, _ = remote.LlamaServerChat().generate(
+            self.connect(), "", "hi", thinking="auto", max_tokens=32,
+            temperature=0.0, top_p=1.0, seed=0)
+        self.assertEqual((text, thinking), ("Answer.", "hmm"))
+
+    def test_completion_node_also_splits_thinking(self):
+        self.stub.state["pieces"] = ["<think>plan</think>", "done"]
+        text, thinking = remote.LlamaServerComplete().generate(
+            self.connect(), "prompt", max_tokens=32, temperature=0.0, top_p=1.0,
+            seed=0)
+        self.assertEqual((text, thinking), ("done", "plan"))
+
+    def test_existing_template_kwargs_are_preserved(self):
+        payload = apply_thinking({"chat_template_kwargs": {"foo": 1}}, "off")
+        self.assertEqual(payload["chat_template_kwargs"],
+                         {"foo": 1, "enable_thinking": False})
+
+
 class TestCompletionNode(ServerTestCase):
     def test_native_endpoint_is_used(self):
-        text, = remote.LlamaServerComplete().generate(
+        text, _ = remote.LlamaServerComplete().generate(
             self.connect(), "Once upon", max_tokens=24, temperature=0.8, top_p=0.9,
             seed=1)
         self.assertEqual(text, "Hello world")
@@ -373,9 +428,10 @@ class TestVisionNode(ServerTestCase):
     def test_images_are_uploaded_as_data_uris(self):
         import numpy as np
 
-        text, _ = remote.LlamaServerVisionChat().generate(
+        text, _, _ = remote.LlamaServerVisionChat().generate(
             self.connect(), np.zeros((1, 8, 8, 3), dtype=np.float32), "sys",
-            "what is this?", max_tokens=16, temperature=0.1, top_p=0.9, seed=2)
+            "what is this?", thinking="auto", max_tokens=16, temperature=0.1,
+            top_p=0.9, seed=2)
         self.assertEqual(text, "Hello world")
 
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]

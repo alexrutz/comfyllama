@@ -8,22 +8,28 @@ share one loaded model.
 from __future__ import annotations
 
 import json
+from typing import Tuple
 
 from ..backend import sampler_kwargs
 from ..images import images_to_content
-from ..server import (LlamaServer, LlamaServerError, apply_grammar, build_payload,
-                      stream_chat, stream_completion)
-from .common import CATEGORY_SERVER, generation_inputs, is_changed_for_seed
+from ..reasoning import combine, split_thinking
+from ..server import (LlamaServer, LlamaServerError, apply_grammar, apply_thinking,
+                      build_payload, stream_chat, stream_completion)
+from .common import (CATEGORY_SERVER, generation_inputs, is_changed_for_seed,
+                     thinking_input)
 from .generation import _messages
 
 
-def _chat(connection, conversation, max_tokens, temperature, top_p, seed,
-          sampling, grammar) -> str:
+def _chat(connection, conversation, thinking, max_tokens, temperature, top_p, seed,
+          sampling, grammar) -> Tuple[str, str]:
+    """Run a remote chat completion, split into ``(answer, thinking)``."""
     kwargs = sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
                             top_p=top_p, seed=seed, sampling=sampling)
     payload = apply_grammar(build_payload(kwargs, native=False), grammar, native=False)
-    text, _ = stream_chat(connection, conversation, payload)
-    return text
+    payload = apply_thinking(payload, thinking)
+    raw, reasoning_field, _ = stream_chat(connection, conversation, payload)
+    text, thought = split_thinking(raw)
+    return text, combine(reasoning_field, thought)
 
 
 class LlamaServerConnect:
@@ -96,6 +102,7 @@ class LlamaServerChat:
                 }),
                 "prompt": ("STRING", {"default": "", "multiline": True,
                                       "dynamicPrompts": True}),
+                "thinking": thinking_input(),
                 **generation_inputs(),
             },
             "optional": {
@@ -107,8 +114,8 @@ class LlamaServerChat:
             },
         }
 
-    RETURN_TYPES = ("STRING", "LLAMA_MESSAGES")
-    RETURN_NAMES = ("text", "messages")
+    RETURN_TYPES = ("STRING", "STRING", "LLAMA_MESSAGES")
+    RETURN_NAMES = ("text", "thinking", "messages")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_SERVER
     DESCRIPTION = "Chat with a remote llama-server."
@@ -117,12 +124,14 @@ class LlamaServerChat:
     def IS_CHANGED(cls, seed=0, **kwargs):
         return is_changed_for_seed(seed)
 
-    def generate(self, server, system, prompt, max_tokens, temperature, top_p, seed,
-                 messages=None, sampling=None, grammar=None):
+    def generate(self, server, system, prompt, thinking, max_tokens, temperature,
+                 top_p, seed, messages=None, sampling=None, grammar=None):
         conversation = _messages(system, prompt, messages)
-        text = _chat(server, conversation, max_tokens, temperature, top_p, seed,
-                     sampling, grammar)
-        return (text, conversation + [{"role": "assistant", "content": text}])
+        text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
+                              top_p, seed, sampling, grammar)
+        # The chain of thought is not fed back into the next turn.
+        history = conversation + [{"role": "assistant", "content": text}]
+        return (text, thought, history)
 
 
 class LlamaServerVisionChat:
@@ -142,6 +151,7 @@ class LlamaServerVisionChat:
                     "default": "Describe this image in detail.",
                     "multiline": True, "dynamicPrompts": True,
                 }),
+                "thinking": thinking_input(),
                 **generation_inputs(),
             },
             "optional": {
@@ -160,8 +170,8 @@ class LlamaServerVisionChat:
             },
         }
 
-    RETURN_TYPES = ("STRING", "LLAMA_MESSAGES")
-    RETURN_NAMES = ("text", "messages")
+    RETURN_TYPES = ("STRING", "STRING", "LLAMA_MESSAGES")
+    RETURN_NAMES = ("text", "thinking", "messages")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_SERVER
     DESCRIPTION = "Caption or interrogate images with a multimodal llama-server."
@@ -170,16 +180,17 @@ class LlamaServerVisionChat:
     def IS_CHANGED(cls, seed=0, **kwargs):
         return is_changed_for_seed(seed)
 
-    def generate(self, server, image, system, prompt, max_tokens, temperature, top_p,
-                 seed, image_max_size=1024, image_quality=90, messages=None,
+    def generate(self, server, image, system, prompt, thinking, max_tokens, temperature,
+                 top_p, seed, image_max_size=1024, image_quality=90, messages=None,
                  sampling=None, grammar=None):
         content = images_to_content(image, max_size=image_max_size,
                                     quality=image_quality)
         content.append({"type": "text", "text": prompt})
         conversation = _messages(system, prompt, messages, content=content)
-        text = _chat(server, conversation, max_tokens, temperature, top_p, seed,
-                     sampling, grammar)
-        return (text, conversation + [{"role": "assistant", "content": text}])
+        text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
+                              top_p, seed, sampling, grammar)
+        history = conversation + [{"role": "assistant", "content": text}]
+        return (text, thought, history)
 
 
 class LlamaServerComplete:
@@ -205,8 +216,8 @@ class LlamaServerComplete:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("text",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("text", "thinking")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_SERVER
     DESCRIPTION = "Continue a prompt on a remote llama-server (no chat template)."
@@ -221,8 +232,8 @@ class LlamaServerComplete:
                                 top_p=top_p, seed=seed, sampling=sampling)
         payload = apply_grammar(build_payload(kwargs, native=True), grammar, native=True)
         payload["cache_prompt"] = bool(cache_prompt)
-        text, _ = stream_completion(server, prompt, payload)
-        return (text,)
+        raw, _ = stream_completion(server, prompt, payload)
+        return split_thinking(raw)
 
 
 class LlamaServerTokenCount:

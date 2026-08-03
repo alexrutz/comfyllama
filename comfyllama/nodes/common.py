@@ -51,6 +51,19 @@ def seed_input(tooltip: str = "Sampling seed. -1 draws a new random seed on ever
     })
 
 
+def thinking_input() -> Any:
+    """The reasoning switch shown on the chat nodes."""
+    from ..reasoning import THINKING_MODES
+
+    return (THINKING_MODES, {
+        "default": "auto",
+        "tooltip": "Reasoning models only. 'auto' leaves the model's default "
+                   "alone; 'on'/'off' request thinking explicitly. The chain of "
+                   "thought is always returned on the separate 'thinking' "
+                   "output and kept out of 'text' and the chat history.",
+    })
+
+
 def generation_inputs() -> Dict[str, Any]:
     """The handful of sampling controls that belong on every generation node."""
     return {

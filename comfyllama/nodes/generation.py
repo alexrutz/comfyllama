@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-from .. import backend
+from .. import backend, reasoning
 from ..images import images_to_content
 from .common import (CATEGORY, CATEGORY_ADVANCED, generation_inputs,
-                     is_changed_for_seed)
+                     is_changed_for_seed, thinking_input)
 
 
 def _messages(system: str, prompt: str, history, content=None) -> List[Dict[str, Any]]:
@@ -46,8 +46,8 @@ class LlamaCppComplete:
             },
         }
 
-    RETURN_TYPES = ("STRING", "INT")
-    RETURN_NAMES = ("text", "tokens")
+    RETURN_TYPES = ("STRING", "STRING", "INT")
+    RETURN_NAMES = ("text", "thinking", "tokens")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
     DESCRIPTION = "Continue a prompt with a llama.cpp model (no chat template)."
@@ -60,9 +60,11 @@ class LlamaCppComplete:
                  sampling=None, grammar=None):
         kwargs = backend.sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
                                         top_p=top_p, seed=seed, sampling=sampling)
-        text, _ = backend.complete(model, prompt, grammar=backend.build_grammar(grammar),
-                                   **kwargs)
-        return (text, backend.count_tokens(model, text))
+        raw, reasoning_field, _ = backend.complete(
+            model, prompt, grammar=backend.build_grammar(grammar), **kwargs)
+        text, thinking = reasoning.split_thinking(raw)
+        thinking = reasoning.combine(reasoning_field, thinking)
+        return (text, thinking, backend.count_tokens(model, text))
 
 
 class LlamaCppChat:
@@ -80,6 +82,7 @@ class LlamaCppChat:
                 }),
                 "prompt": ("STRING", {"default": "", "multiline": True,
                                       "dynamicPrompts": True}),
+                "thinking": thinking_input(),
                 **generation_inputs(),
             },
             "optional": {
@@ -91,8 +94,8 @@ class LlamaCppChat:
             },
         }
 
-    RETURN_TYPES = ("STRING", "LLAMA_MESSAGES", "INT")
-    RETURN_NAMES = ("text", "messages", "tokens")
+    RETURN_TYPES = ("STRING", "STRING", "LLAMA_MESSAGES", "INT")
+    RETURN_NAMES = ("text", "thinking", "messages", "tokens")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
     DESCRIPTION = "Chat with a llama.cpp model and get the updated history back."
@@ -101,23 +104,33 @@ class LlamaCppChat:
     def IS_CHANGED(cls, seed=0, **kwargs):
         return is_changed_for_seed(seed)
 
-    def generate(self, model, system, prompt, max_tokens, temperature, top_p, seed,
-                 messages=None, sampling=None, grammar=None):
+    def generate(self, model, system, prompt, thinking, max_tokens, temperature, top_p,
+                 seed, messages=None, sampling=None, grammar=None):
         conversation = _messages(system, prompt, messages)
-        kwargs = backend.sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
-                                        top_p=top_p, seed=seed, sampling=sampling)
-        text, _ = backend.chat(
-            model, conversation,
-            grammar=backend.build_grammar(grammar) if _needs_grammar(grammar) else None,
-            response_fmt=backend.response_format(grammar),
-            **kwargs)
+        text, thought = _run_chat(model, conversation, thinking, max_tokens,
+                                  temperature, top_p, seed, sampling, grammar)
+        # The chain of thought is not fed back into the next turn.
         history = conversation + [{"role": "assistant", "content": text}]
-        return (text, history, backend.count_tokens(model, text))
+        return (text, thought, history, backend.count_tokens(model, text))
 
 
 def _needs_grammar(spec) -> bool:
     """GBNF has to go in as a grammar; JSON modes use ``response_format``."""
     return bool(spec) and spec.get("type") == "gbnf"
+
+
+def _run_chat(model, conversation, thinking, max_tokens, temperature, top_p, seed,
+              sampling, grammar) -> Tuple[str, str]:
+    """Run a chat completion and split the answer from the chain of thought."""
+    kwargs = backend.sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
+                                    top_p=top_p, seed=seed, sampling=sampling)
+    raw, reasoning_field, _ = backend.chat(
+        model, reasoning.apply_control_tag(conversation, thinking),
+        grammar=backend.build_grammar(grammar) if _needs_grammar(grammar) else None,
+        response_fmt=backend.response_format(grammar),
+        **kwargs)
+    text, thought = reasoning.split_thinking(raw)
+    return text, reasoning.combine(reasoning_field, thought)
 
 
 class LlamaCppVisionChat:
@@ -140,6 +153,7 @@ class LlamaCppVisionChat:
                     "default": "Describe this image in detail.",
                     "multiline": True, "dynamicPrompts": True,
                 }),
+                "thinking": thinking_input(),
                 **generation_inputs(),
             },
             "optional": {
@@ -158,8 +172,8 @@ class LlamaCppVisionChat:
             },
         }
 
-    RETURN_TYPES = ("STRING", "LLAMA_MESSAGES")
-    RETURN_NAMES = ("text", "messages")
+    RETURN_TYPES = ("STRING", "STRING", "LLAMA_MESSAGES")
+    RETURN_NAMES = ("text", "thinking", "messages")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
     DESCRIPTION = "Caption or interrogate images with a multimodal llama.cpp model."
@@ -168,9 +182,9 @@ class LlamaCppVisionChat:
     def IS_CHANGED(cls, seed=0, **kwargs):
         return is_changed_for_seed(seed)
 
-    def generate(self, model, image, system, prompt, max_tokens, temperature, top_p, seed,
-                 image_max_size=1024, image_quality=90, messages=None, sampling=None,
-                 grammar=None):
+    def generate(self, model, image, system, prompt, thinking, max_tokens, temperature,
+                 top_p, seed, image_max_size=1024, image_quality=90, messages=None,
+                 sampling=None, grammar=None):
         if not model.vision:
             raise ValueError(
                 "This model was loaded without a multimodal projector. Use the "
@@ -179,15 +193,10 @@ class LlamaCppVisionChat:
         content = images_to_content(image, max_size=image_max_size, quality=image_quality)
         content.append({"type": "text", "text": prompt})
         conversation = _messages(system, prompt, messages, content=content)
-        kwargs = backend.sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
-                                        top_p=top_p, seed=seed, sampling=sampling)
-        text, _ = backend.chat(
-            model, conversation,
-            grammar=backend.build_grammar(grammar) if _needs_grammar(grammar) else None,
-            response_fmt=backend.response_format(grammar),
-            **kwargs)
+        text, thought = _run_chat(model, conversation, thinking, max_tokens,
+                                  temperature, top_p, seed, sampling, grammar)
         history = conversation + [{"role": "assistant", "content": text}]
-        return (text, history)
+        return (text, thought, history)
 
 
 class LlamaCppSampling:

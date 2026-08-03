@@ -81,7 +81,7 @@ sys.path.insert(0, os.path.dirname(REPO_ROOT))
 sys.path.insert(0, REPO_ROOT)
 
 import comfyllama  # noqa: E402
-from comfyllama import backend, paths  # noqa: E402
+from comfyllama import backend, paths, reasoning  # noqa: E402
 from comfyllama.nodes import generation, utils  # noqa: E402
 
 
@@ -261,6 +261,83 @@ class TestMessages(unittest.TestCase):
         self.assertIn("what is this?", rendered)
 
 
+class TestThinkingSplit(unittest.TestCase):
+    def test_plain_answer_has_no_thinking(self):
+        self.assertEqual(reasoning.split_thinking("just an answer"),
+                         ("just an answer", ""))
+        self.assertEqual(reasoning.split_thinking(""), ("", ""))
+
+    def test_think_block_is_removed_from_the_answer(self):
+        answer, thinking = reasoning.split_thinking(
+            "<think>weighing options</think>\n\nThe answer is 42.")
+        self.assertEqual(answer, "The answer is 42.")
+        self.assertEqual(thinking, "weighing options")
+
+    def test_closing_tag_without_opening_is_treated_as_thinking(self):
+        # The chat template already emitted "<think>", so the model only
+        # generates the closing tag.
+        answer, thinking = reasoning.split_thinking("still reasoning</think>Done.")
+        self.assertEqual(answer, "Done.")
+        self.assertEqual(thinking, "still reasoning")
+
+    def test_unterminated_block_keeps_everything_as_thinking(self):
+        answer, thinking = reasoning.split_thinking("<think>cut off mid thought")
+        self.assertEqual(answer, "")
+        self.assertEqual(thinking, "cut off mid thought")
+
+    def test_multiple_blocks_are_merged_and_tags_are_case_insensitive(self):
+        answer, thinking = reasoning.split_thinking(
+            "<Thinking>one</Thinking>A<think>two</think>B")
+        self.assertEqual(answer, "AB")
+        self.assertEqual(thinking, "onetwo")
+
+    def test_text_before_the_block_is_kept(self):
+        answer, thinking = reasoning.split_thinking("Sure. <think>hmm</think> Here:")
+        self.assertEqual(answer, "Sure.  Here:".strip())
+        self.assertEqual(thinking, "hmm")
+
+    def test_reasoning_field_and_parsed_tags_are_combined(self):
+        self.assertEqual(reasoning.combine("from server", "from tags"),
+                         "from server\nfrom tags")
+        self.assertEqual(reasoning.combine("", "from tags"), "from tags")
+        self.assertEqual(reasoning.combine("  ", ""), "")
+
+
+class TestThinkingControlTag(unittest.TestCase):
+    def test_auto_leaves_the_conversation_untouched(self):
+        messages = [{"role": "user", "content": "hi"}]
+        self.assertEqual(reasoning.apply_control_tag(messages, "auto"), messages)
+
+    def test_tag_is_appended_to_the_last_user_message(self):
+        messages = [{"role": "system", "content": "sys"},
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "reply"},
+                    {"role": "user", "content": "second"}]
+        tagged = reasoning.apply_control_tag(messages, "off")
+        self.assertEqual(tagged[-1]["content"], "second\n/no_think")
+        self.assertEqual(tagged[1]["content"], "first")
+        self.assertEqual(messages[-1]["content"], "second")  # input not mutated
+
+        self.assertEqual(
+            reasoning.apply_control_tag(messages, "on")[-1]["content"],
+            "second\n/think")
+
+    def test_tag_goes_into_the_text_part_of_multimodal_content(self):
+        messages = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "text", "text": "what is this?"},
+        ]}]
+        tagged = reasoning.apply_control_tag(messages, "off")
+        content = tagged[0]["content"]
+        self.assertEqual(content[0]["type"], "image_url")
+        self.assertEqual(content[-1]["text"], "what is this?\n/no_think")
+
+    def test_template_kwargs_map_to_the_server_field(self):
+        self.assertEqual(reasoning.template_kwargs("on"), {"enable_thinking": True})
+        self.assertEqual(reasoning.template_kwargs("off"), {"enable_thinking": False})
+        self.assertIsNone(reasoning.template_kwargs("auto"))
+
+
 class TestUtilNodes(unittest.TestCase):
     def test_template_substitutes_connected_inputs_only(self):
         result = utils.LlamaCppPromptTemplate().format(
@@ -350,6 +427,26 @@ class FakeLlama:
         self.closed = True
 
 
+class ReasoningLlama(FakeLlama):
+    """A model whose handler splits the chain of thought off itself."""
+
+    def __init__(self, pieces, reasoning_pieces):
+        super().__init__(list(pieces))
+        self.reasoning_pieces = list(reasoning_pieces)
+
+    def create_chat_completion(self, messages, **kwargs):
+        self.calls.append({"messages": messages, **kwargs})
+
+        def stream():
+            for piece in self.reasoning_pieces:
+                yield {"choices": [{"delta": {"reasoning_content": piece}}]}
+            for piece in self.pieces:
+                yield {"choices": [{"delta": {"content": piece}}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+        return stream()
+
+
 def fake_model(pieces=("Hello", " world")):
     llm = FakeLlama(list(pieces))
     return backend.LlamaModel(llm, ("key",), "fake"), llm
@@ -358,17 +455,19 @@ def fake_model(pieces=("Hello", " world")):
 class TestGeneration(unittest.TestCase):
     def test_completion_streams_and_counts_tokens(self):
         model, llm = fake_model()
-        text, tokens = generation.LlamaCppComplete().generate(
+        text, thinking, tokens = generation.LlamaCppComplete().generate(
             model, "prompt", max_tokens=16, temperature=0.2, top_p=0.9, seed=3)
         self.assertEqual(text, "Hello world")
+        self.assertEqual(thinking, "")
         self.assertEqual(tokens, 2)
         self.assertEqual(llm.calls[0]["seed"], 3)
         self.assertEqual(llm.calls[0]["max_tokens"], 16)
 
     def test_chat_returns_the_updated_history(self):
         model, llm = fake_model(["Hi"])
-        text, messages, _ = generation.LlamaCppChat().generate(
-            model, "be nice", "hello", max_tokens=8, temperature=0.1, top_p=1.0, seed=0)
+        text, _, messages, _ = generation.LlamaCppChat().generate(
+            model, "be nice", "hello", thinking="auto", max_tokens=8, temperature=0.1,
+            top_p=1.0, seed=0)
         self.assertEqual(text, "Hi")
         self.assertEqual([m["role"] for m in messages],
                          ["system", "user", "assistant"])
@@ -378,8 +477,8 @@ class TestGeneration(unittest.TestCase):
         model, llm = fake_model(["{}"])
         grammar = generation.LlamaCppGrammar().build("json_object", "")[0]
         generation.LlamaCppChat().generate(
-            model, "", "hello", max_tokens=8, temperature=0.0, top_p=1.0, seed=0,
-            grammar=grammar)
+            model, "", "hello", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0, grammar=grammar)
         self.assertEqual(llm.calls[0]["response_format"], {"type": "json_object"})
         self.assertIsNone(llm.calls[0]["grammar"])
 
@@ -399,8 +498,8 @@ class TestGeneration(unittest.TestCase):
         model, _ = fake_model()
         with self.assertRaises(ValueError) as ctx:
             generation.LlamaCppVisionChat().generate(
-                model, object(), "sys", "describe", max_tokens=8, temperature=0.0,
-                top_p=1.0, seed=0)
+                model, object(), "sys", "describe", thinking="auto", max_tokens=8,
+                temperature=0.0, top_p=1.0, seed=0)
         self.assertIn("multimodal projector", str(ctx.exception))
 
     def test_unloaded_model_reports_a_useful_error(self):
@@ -410,6 +509,40 @@ class TestGeneration(unittest.TestCase):
             generation.LlamaCppComplete().generate(
                 model, "prompt", max_tokens=4, temperature=0.0, top_p=1.0, seed=0)
         self.assertIn("unloaded", str(ctx.exception))
+
+    def test_chat_separates_thinking_from_the_answer_and_history(self):
+        model, _ = fake_model(["<think>", "let me see", "</think>", "42"])
+        text, thinking, messages, _ = generation.LlamaCppChat().generate(
+            model, "", "what is 6*7?", thinking="auto", max_tokens=32,
+            temperature=0.0, top_p=1.0, seed=0)
+        self.assertEqual(text, "42")
+        self.assertEqual(thinking, "let me see")
+        # The chain of thought must not leak into the next turn.
+        self.assertEqual(messages[-1], {"role": "assistant", "content": "42"})
+
+    def test_completion_separates_thinking_and_counts_only_the_answer(self):
+        model, _ = fake_model(["<think>a b c</think>", "final answer"])
+        text, thinking, tokens = generation.LlamaCppComplete().generate(
+            model, "prompt", max_tokens=32, temperature=0.0, top_p=1.0, seed=0)
+        self.assertEqual((text, thinking), ("final answer", "a b c"))
+        self.assertEqual(tokens, 2)
+
+    def test_thinking_switch_adds_the_control_tag_to_the_prompt(self):
+        model, llm = fake_model(["ok"])
+        generation.LlamaCppChat().generate(
+            model, "sys", "hello", thinking="off", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0)
+        sent = llm.calls[0]["messages"]
+        self.assertEqual(sent[-1]["content"], "hello\n/no_think")
+        self.assertEqual(sent[0]["content"], "sys")
+
+    def test_reasoning_content_field_is_used_when_present(self):
+        model, _ = fake_model()
+        model.llm = ReasoningLlama(["answer"], ["deliberating"])
+        text, thinking, _, _ = generation.LlamaCppChat().generate(
+            model, "", "hi", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0)
+        self.assertEqual((text, thinking), ("answer", "deliberating"))
 
     def test_random_seed_busts_the_comfyui_cache(self):
         self.assertNotEqual(generation.LlamaCppChat.IS_CHANGED(seed=-1),

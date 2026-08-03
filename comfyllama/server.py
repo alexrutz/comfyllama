@@ -202,6 +202,23 @@ def build_payload(kwargs: Dict[str, Any], *, native: bool) -> Dict[str, Any]:
     return payload
 
 
+def apply_thinking(payload: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    """Ask the server's chat template to enable or disable reasoning.
+
+    ``chat_template_kwargs`` is what llama-server forwards into the Jinja chat
+    template, which is how Qwen3-style models expose the switch.  Templates
+    without the variable simply ignore it.
+    """
+    from .reasoning import template_kwargs
+
+    kwargs = template_kwargs(mode)
+    if kwargs:
+        merged = dict(payload.get("chat_template_kwargs") or {})
+        merged.update(kwargs)
+        payload["chat_template_kwargs"] = merged
+    return payload
+
+
 def apply_grammar(payload: Dict[str, Any], spec: Optional[Dict[str, Any]], *,
                   native: bool) -> Dict[str, Any]:
     """Attach grammar/JSON constraints in the form the endpoint expects."""
@@ -228,8 +245,14 @@ def apply_grammar(payload: Dict[str, Any], spec: Optional[Dict[str, Any]], *,
 
 
 def stream_chat(server: LlamaServer, messages: List[Dict[str, Any]],
-                payload: Dict[str, Any]) -> Tuple[str, str]:
-    """Run ``/v1/chat/completions`` and return ``(text, finish_reason)``."""
+                payload: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Run ``/v1/chat/completions``.
+
+    Returns ``(text, reasoning, finish_reason)``.  ``reasoning`` is filled when
+    the server splits the chain of thought off itself, which it does when it
+    runs with ``--reasoning-format deepseek``; otherwise the thinking stays
+    inside the text as ``<think>`` tags and is parsed by the caller.
+    """
     body = dict(payload)
     body["messages"] = messages
     model = server.resolve_model()
@@ -237,6 +260,7 @@ def stream_chat(server: LlamaServer, messages: List[Dict[str, Any]],
         body["model"] = model
 
     pieces: List[str] = []
+    reasoning: List[str] = []
     finish_reason = ""
     progress = progress_bar(payload.get("max_tokens") or 0)
     for event in server.stream("/v1/chat/completions", body):
@@ -244,16 +268,19 @@ def stream_chat(server: LlamaServer, messages: List[Dict[str, Any]],
         if not choices:
             continue
         choice = choices[0]
-        piece = (choice.get("delta") or {}).get("content")
-        if piece is None:
-            piece = (choice.get("message") or {}).get("content")
+        # Non-streaming servers answer with "message" instead of "delta".
+        source = choice.get("delta") or choice.get("message") or {}
+        piece = source.get("content")
+        reasoning_piece = source.get("reasoning_content")
         if piece:
             pieces.append(piece)
-            if progress is not None:
-                progress.update(1)
+        if reasoning_piece:
+            reasoning.append(reasoning_piece)
+        if (piece or reasoning_piece) and progress is not None:
+            progress.update(1)
         if choice.get("finish_reason"):
             finish_reason = choice["finish_reason"]
-    return "".join(pieces), finish_reason
+    return "".join(pieces), "".join(reasoning), finish_reason
 
 
 def stream_completion(server: LlamaServer, prompt: str,

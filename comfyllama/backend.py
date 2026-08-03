@@ -405,25 +405,29 @@ def sampler_kwargs(*, max_tokens: int, temperature: float, top_p: float, seed: i
 # --------------------------------------------------------------------------
 
 
-def _consume(chunks: Iterator[Dict[str, Any]], extract: Callable[[Dict[str, Any]], str],
-             max_tokens: Optional[int]) -> Tuple[str, str]:
-    """Stream a completion, returning ``(text, finish_reason)``.
+def _consume(chunks: Iterator[Dict[str, Any]],
+             extract: Callable[[Dict[str, Any]], Tuple[str, str]],
+             max_tokens: Optional[int]) -> Tuple[str, str, str]:
+    """Stream a completion, returning ``(text, reasoning, finish_reason)``.
 
     Streaming is used even though nodes return the full string: it is what
     makes the ComfyUI cancel button responsive and drives the progress bar.
     """
     progress = progress_bar(max_tokens or 0)
     pieces: List[str] = []
+    reasoning: List[str] = []
     finish_reason = ""
     try:
         for chunk in chunks:
             check_interrupt()
             choices = chunk.get("choices") or [{}]
-            piece = extract(choices[0])
+            piece, reasoning_piece = extract(choices[0])
             if piece:
                 pieces.append(piece)
-                if progress is not None:
-                    progress.update(1)
+            if reasoning_piece:
+                reasoning.append(reasoning_piece)
+            if (piece or reasoning_piece) and progress is not None:
+                progress.update(1)
             reason = choices[0].get("finish_reason")
             if reason:
                 finish_reason = reason
@@ -434,22 +438,24 @@ def _consume(chunks: Iterator[Dict[str, Any]], extract: Callable[[Dict[str, Any]
                 close()
             except Exception:
                 pass
-    return "".join(pieces), finish_reason
+    return "".join(pieces), "".join(reasoning), finish_reason
 
 
-def complete(model: LlamaModel, prompt: str, *, grammar=None, **kwargs) -> Tuple[str, str]:
+def complete(model: LlamaModel, prompt: str, *, grammar=None,
+             **kwargs) -> Tuple[str, str, str]:
     llm = model.require()
     call_kwargs = filter_kwargs(llm.create_completion, kwargs)
     if grammar is not None:
         call_kwargs["grammar"] = grammar
     call_kwargs["stream"] = True
     stream = llm.create_completion(prompt=prompt, **call_kwargs)
-    return _consume(stream, lambda choice: choice.get("text") or "",
+    return _consume(stream, lambda choice: (choice.get("text") or "", ""),
                     kwargs.get("max_tokens"))
 
 
 def chat(model: LlamaModel, messages: List[Dict[str, Any]], *, grammar=None,
-         response_fmt: Optional[Dict[str, Any]] = None, **kwargs) -> Tuple[str, str]:
+         response_fmt: Optional[Dict[str, Any]] = None,
+         **kwargs) -> Tuple[str, str, str]:
     llm = model.require()
     call_kwargs = filter_kwargs(llm.create_chat_completion, kwargs)
     if grammar is not None:
@@ -459,14 +465,11 @@ def chat(model: LlamaModel, messages: List[Dict[str, Any]], *, grammar=None,
     call_kwargs["stream"] = True
     stream = llm.create_chat_completion(messages=messages, **call_kwargs)
 
-    def extract(choice: Dict[str, Any]) -> str:
-        delta = choice.get("delta") or {}
-        content = delta.get("content")
-        if content:
-            return content
+    def extract(choice: Dict[str, Any]) -> Tuple[str, str]:
         # Non-streaming fallback for handlers that ignore stream=True.
-        message = choice.get("message") or {}
-        return message.get("content") or ""
+        source = choice.get("delta") or choice.get("message") or {}
+        return (source.get("content") or "",
+                source.get("reasoning_content") or "")
 
     return _consume(stream, extract, kwargs.get("max_tokens"))
 
