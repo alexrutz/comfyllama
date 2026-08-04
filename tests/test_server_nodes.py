@@ -12,7 +12,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from test_nodes import HAVE_IMAGING  # noqa: F401  (also installs the ComfyUI stubs)
+# Importing test_nodes also installs the ComfyUI stubs.
+from test_nodes import HAVE_IMAGING, sampling_args  # noqa: F401
 
 from comfyllama.nodes import remote
 from comfyllama.nodes.generation import LlamaCppGrammar, LlamaCppSampling
@@ -196,16 +197,26 @@ class TestUrlHandling(unittest.TestCase):
 
 
 class TestPayloads(unittest.TestCase):
-    def test_openai_payload_renames_mirostat_and_keeps_max_tokens(self):
+    def test_openai_payload_keeps_max_tokens_and_sends_nothing_extra(self):
         from comfyllama.backend import sampler_kwargs
 
         payload = build_payload(
             sampler_kwargs(max_tokens=32, temperature=0.5, top_p=0.9, seed=3,
                            sampling=None), native=False)
         self.assertEqual(payload["max_tokens"], 32)
-        self.assertEqual(payload["mirostat"], 0)
+        # Nothing beyond the node's own controls is sent unless switched on.
+        self.assertEqual(set(payload), {"max_tokens", "temperature", "top_p", "seed"})
+
+    def test_enabled_mirostat_is_renamed_for_the_server(self):
+        from comfyllama.backend import sampler_kwargs
+
+        sampling = LlamaCppSampling().build(**sampling_args(
+            use_mirostat=True, mirostat_mode=2))[0]
+        payload = build_payload(
+            sampler_kwargs(max_tokens=32, temperature=0.5, top_p=0.9, seed=3,
+                           sampling=sampling), native=False)
+        self.assertEqual(payload["mirostat"], 2)
         self.assertNotIn("mirostat_mode", payload)
-        self.assertNotIn("stop", payload)  # empty stop lists are not sent
 
     def test_native_payload_uses_n_predict(self):
         from comfyllama.backend import sampler_kwargs
@@ -289,10 +300,9 @@ class TestChatNode(ServerTestCase):
         self.assertEqual([m["role"] for m in sent["messages"]], ["system", "user"])
 
     def test_sampling_and_grammar_reach_the_server(self):
-        sampling = LlamaCppSampling().build(
-            top_k=20, min_p=0.02, typical_p=0.95, repeat_penalty=1.15,
-            presence_penalty=0.0, frequency_penalty=0.0, mirostat_mode=2,
-            mirostat_tau=4.0, mirostat_eta=0.2, stop_sequences="END")[0]
+        sampling = LlamaCppSampling().build(**sampling_args(
+            use_top_k=True, top_k=20, use_mirostat=True, mirostat_mode=2,
+            use_stop_sequences=True, stop_sequences="END"))[0]
         grammar = LlamaCppGrammar().build("json_object", "")[0]
         remote.LlamaServerChat().generate(
             self.connect(), "", "hi", thinking="auto", max_tokens=8, temperature=0.0,
@@ -303,6 +313,9 @@ class TestChatNode(ServerTestCase):
         self.assertEqual(sent["mirostat"], 2)
         self.assertEqual(sent["stop"], ["END"])
         self.assertEqual(sent["response_format"], {"type": "json_object"})
+        # Settings left switched off never reach the server.
+        self.assertNotIn("min_p", sent)
+        self.assertNotIn("repeat_penalty", sent)
 
     def test_history_is_forwarded(self):
         history = [{"role": "user", "content": "first"},

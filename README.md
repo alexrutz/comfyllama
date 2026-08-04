@@ -20,7 +20,7 @@ rebuilding the graph.
 | **Chat (llama.cpp)** | System prompt, user prompt and a thinking switch. Returns `text`, `thinking` and the updated history. |
 | **Text Completion (llama.cpp)** | Raw completion, no chat template and no system prompt. |
 | **Vision Chat (llama.cpp)** | Sends an `IMAGE` (or a whole batch) plus a system and user prompt to a multimodal model. |
-| **Sampler Settings (llama.cpp)** | top_k, min_p, typical_p, repetition/presence/frequency penalties, Mirostat, stop sequences. |
+| **Sampler Settings (llama.cpp)** | top_k, min_p, typical_p, repetition/presence/frequency penalties, Mirostat, stop sequences — each switched on individually. |
 | **Grammar / JSON Output (llama.cpp)** | Constrains output to JSON, a JSON schema, or a custom GBNF grammar. |
 | **Chat Message (llama.cpp)** | Builds a conversation for multi-turn chats or few-shot prompting. |
 | **Messages to Text (llama.cpp)** | Renders a conversation as plain text. |
@@ -73,6 +73,23 @@ python_embeded\python.exe -m pip install llama-cpp-python
 
 Restart ComfyUI afterwards. If the binding is missing, the nodes still load and
 tell you exactly what to install when you run them.
+
+## Sampling
+
+`max_tokens`, `temperature`, `top_p` and `seed` sit on the generation nodes and
+are always sent. Everything else lives on the **Sampler Settings** node, where
+each setting has its own switch:
+
+- **Switch off** (the default): the parameter is left out of the request
+  entirely, so whatever the model, llama-cpp-python or your `llama-server`
+  command line sets stays in effect. Disabled rows are greyed out on the node.
+- **Switch on**: the value next to it is sent.
+
+So a Sampler Settings node with only `use_repeat_penalty` on changes the
+repetition penalty and nothing else — it will not quietly pin `top_k` or
+`min_p` to this node's defaults. With every switch off it behaves exactly like
+not connecting the node at all. `mirostat_tau` and `mirostat_eta` are
+meaningless without the mode, so those three share one switch.
 
 ## Prompts and reasoning models
 

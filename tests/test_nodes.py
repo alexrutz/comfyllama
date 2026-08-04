@@ -146,19 +146,71 @@ class TestPaths(unittest.TestCase):
             os.remove(target)
 
 
+SAMPLING_DEFAULTS = {
+    "use_top_k": False, "top_k": 40,
+    "use_min_p": False, "min_p": 0.05,
+    "use_typical_p": False, "typical_p": 1.0,
+    "use_repeat_penalty": False, "repeat_penalty": 1.1,
+    "use_presence_penalty": False, "presence_penalty": 0.0,
+    "use_frequency_penalty": False, "frequency_penalty": 0.0,
+    "use_mirostat": False, "mirostat_mode": 2, "mirostat_tau": 5.0,
+    "mirostat_eta": 0.1,
+    "use_stop_sequences": False, "stop_sequences": "",
+}
+
+
+def sampling_args(**overrides):
+    """Widget values for the sampling node, everything switched off by default."""
+    return {**SAMPLING_DEFAULTS, **overrides}
+
+
 class TestSampling(unittest.TestCase):
     def test_stop_sequences_are_split_and_unescaped(self):
         self.assertEqual(backend.parse_stop_sequences("</s>\n\\n\\n\n\n  \n"),
                          ["</s>", "\n\n"])
         self.assertEqual(backend.parse_stop_sequences(""), [])
 
-    def test_defaults_are_used_without_a_sampling_node(self):
+    def test_without_a_sampling_node_only_the_node_controls_are_sent(self):
         kwargs = backend.sampler_kwargs(max_tokens=64, temperature=0.5, top_p=0.9,
                                         seed=7, sampling=None)
+        self.assertEqual(set(kwargs), {"max_tokens", "temperature", "top_p", "seed"})
         self.assertEqual(kwargs["max_tokens"], 64)
         self.assertEqual(kwargs["seed"], 7)
-        self.assertEqual(kwargs["top_k"], backend.DEFAULT_SAMPLING["top_k"])
-        self.assertEqual(kwargs["stop"], [])
+
+    def test_disabled_settings_are_left_out_entirely(self):
+        sampling = generation.LlamaCppSampling().build(**sampling_args(
+            use_repeat_penalty=True, repeat_penalty=1.3))[0]
+        self.assertEqual(sampling, {"repeat_penalty": 1.3})
+
+        kwargs = backend.sampler_kwargs(max_tokens=8, temperature=1.0, top_p=1.0,
+                                        seed=1, sampling=sampling)
+        self.assertEqual(kwargs["repeat_penalty"], 1.3)
+        for key in ("top_k", "min_p", "typical_p", "mirostat_mode", "stop"):
+            self.assertNotIn(key, kwargs)
+
+    def test_all_switches_off_is_the_same_as_no_node(self):
+        sampling = generation.LlamaCppSampling().build(**sampling_args())[0]
+        self.assertEqual(sampling, {})
+        self.assertEqual(
+            backend.sampler_kwargs(max_tokens=8, temperature=1.0, top_p=1.0, seed=1,
+                                   sampling=sampling),
+            backend.sampler_kwargs(max_tokens=8, temperature=1.0, top_p=1.0, seed=1,
+                                   sampling=None))
+
+    def test_mirostat_switch_covers_tau_and_eta(self):
+        sampling = generation.LlamaCppSampling().build(**sampling_args(
+            use_mirostat=True, mirostat_mode=1, mirostat_tau=4.0, mirostat_eta=0.3))[0]
+        self.assertEqual(sampling, {"mirostat_mode": 1, "mirostat_tau": 4.0,
+                                    "mirostat_eta": 0.3})
+
+    def test_stop_sequences_need_their_switch(self):
+        self.assertNotIn("stop", generation.LlamaCppSampling().build(**sampling_args(
+            stop_sequences="END"))[0])
+        self.assertEqual(generation.LlamaCppSampling().build(**sampling_args(
+            use_stop_sequences=True, stop_sequences="END"))[0]["stop"], ["END"])
+        # An enabled but empty field must not send an empty stop list.
+        self.assertNotIn("stop", generation.LlamaCppSampling().build(**sampling_args(
+            use_stop_sequences=True, stop_sequences="  "))[0])
 
     def test_zero_max_tokens_means_unlimited_and_negative_seed_random(self):
         kwargs = backend.sampler_kwargs(max_tokens=0, temperature=0.0, top_p=1.0,
@@ -166,17 +218,17 @@ class TestSampling(unittest.TestCase):
         self.assertIsNone(kwargs["max_tokens"])
         self.assertEqual(kwargs["seed"], -1)
 
-    def test_sampling_node_overrides_and_extra_stops_merge(self):
-        sampling = generation.LlamaCppSampling().build(
-            top_k=10, min_p=0.1, typical_p=0.9, repeat_penalty=1.2,
-            presence_penalty=0.1, frequency_penalty=0.2, mirostat_mode=2,
-            mirostat_tau=4.0, mirostat_eta=0.2, stop_sequences="END\nEND")[0]
+    def test_enabled_settings_and_extra_stops_merge(self):
+        sampling = generation.LlamaCppSampling().build(**sampling_args(
+            use_top_k=True, top_k=10, use_mirostat=True, mirostat_mode=2,
+            use_stop_sequences=True, stop_sequences="END\nEND"))[0]
         kwargs = backend.sampler_kwargs(max_tokens=8, temperature=1.0, top_p=1.0,
                                         seed=1, sampling=sampling,
                                         extra_stop=["END", "###"])
         self.assertEqual(kwargs["top_k"], 10)
         self.assertEqual(kwargs["mirostat_mode"], 2)
         self.assertEqual(kwargs["stop"], ["END", "END", "###"])
+        self.assertNotIn("min_p", kwargs)
 
     def test_filter_kwargs_drops_unknown_parameters(self):
         def target(a, b=1):

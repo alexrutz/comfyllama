@@ -199,29 +199,49 @@ class LlamaCppVisionChat:
         return (text, thought, history)
 
 
+def _enable(label: str) -> Any:
+    """The switch in front of one sampler setting."""
+    return ("BOOLEAN", {
+        "default": False,
+        "label_on": "send",
+        "label_off": "leave default",
+        "tooltip": f"Send {label} with the request. While off it is left out "
+                   "entirely, so the model's own default (or the llama-server "
+                   "command line) decides.",
+    })
+
+
 class LlamaCppSampling:
-    """Bundles the sampler settings that rarely need touching."""
+    """Advanced sampler settings, each switched on individually."""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "use_top_k": _enable("top_k"),
                 "top_k": ("INT", {"default": 40, "min": 0, "max": 1000,
                                   "tooltip": "0 disables top-k filtering."}),
+                "use_min_p": _enable("min_p"),
                 "min_p": ("FLOAT", {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "use_typical_p": _enable("typical_p"),
                 "typical_p": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "use_repeat_penalty": _enable("repeat_penalty"),
                 "repeat_penalty": ("FLOAT", {"default": 1.1, "min": 0.0, "max": 2.0,
                                              "step": 0.01}),
+                "use_presence_penalty": _enable("presence_penalty"),
                 "presence_penalty": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 2.0,
                                                "step": 0.01}),
+                "use_frequency_penalty": _enable("frequency_penalty"),
                 "frequency_penalty": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 2.0,
                                                 "step": 0.01}),
-                "mirostat_mode": ("INT", {"default": 0, "min": 0, "max": 2,
+                "use_mirostat": _enable("the Mirostat settings"),
+                "mirostat_mode": ("INT", {"default": 2, "min": 0, "max": 2,
                                           "tooltip": "0 off, 1 Mirostat, 2 Mirostat 2.0."}),
                 "mirostat_tau": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 20.0,
                                            "step": 0.1}),
                 "mirostat_eta": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0,
                                            "step": 0.01}),
+                "use_stop_sequences": _enable("the stop sequences"),
                 "stop_sequences": ("STRING", {
                     "default": "", "multiline": True,
                     "tooltip": "One stop sequence per line. Escapes such as \\n work.",
@@ -233,23 +253,36 @@ class LlamaCppSampling:
     RETURN_NAMES = ("sampling",)
     FUNCTION = "build"
     CATEGORY = CATEGORY_ADVANCED
-    DESCRIPTION = "Advanced sampler settings for the generation nodes."
+    DESCRIPTION = ("Advanced sampler settings for the generation nodes. Each "
+                   "setting is only sent while its switch is on.")
 
-    def build(self, top_k, min_p, typical_p, repeat_penalty, presence_penalty,
-              frequency_penalty, mirostat_mode, mirostat_tau, mirostat_eta,
-              stop_sequences):
-        return ({
-            "top_k": top_k,
-            "min_p": min_p,
-            "typical_p": typical_p,
-            "repeat_penalty": repeat_penalty,
-            "presence_penalty": presence_penalty,
-            "frequency_penalty": frequency_penalty,
-            "mirostat_mode": mirostat_mode,
-            "mirostat_tau": mirostat_tau,
-            "mirostat_eta": mirostat_eta,
-            "stop": backend.parse_stop_sequences(stop_sequences),
-        },)
+    def build(self, use_top_k, top_k, use_min_p, min_p, use_typical_p, typical_p,
+              use_repeat_penalty, repeat_penalty, use_presence_penalty, presence_penalty,
+              use_frequency_penalty, frequency_penalty, use_mirostat, mirostat_mode,
+              mirostat_tau, mirostat_eta, use_stop_sequences, stop_sequences):
+        sampling: Dict[str, Any] = {}
+        if use_top_k:
+            sampling["top_k"] = int(top_k)
+        if use_min_p:
+            sampling["min_p"] = float(min_p)
+        if use_typical_p:
+            sampling["typical_p"] = float(typical_p)
+        if use_repeat_penalty:
+            sampling["repeat_penalty"] = float(repeat_penalty)
+        if use_presence_penalty:
+            sampling["presence_penalty"] = float(presence_penalty)
+        if use_frequency_penalty:
+            sampling["frequency_penalty"] = float(frequency_penalty)
+        if use_mirostat:
+            # tau and eta are meaningless on their own, so they share a switch.
+            sampling["mirostat_mode"] = int(mirostat_mode)
+            sampling["mirostat_tau"] = float(mirostat_tau)
+            sampling["mirostat_eta"] = float(mirostat_eta)
+        if use_stop_sequences:
+            stops = backend.parse_stop_sequences(stop_sequences)
+            if stops:
+                sampling["stop"] = stops
+        return (sampling,)
 
 
 class LlamaCppGrammar:

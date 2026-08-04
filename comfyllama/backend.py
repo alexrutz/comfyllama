@@ -296,18 +296,13 @@ def build_chat_handler(handler_name: str, clip_model_path: str):
 # Sampling
 # --------------------------------------------------------------------------
 
-DEFAULT_SAMPLING: Dict[str, Any] = {
-    "top_k": 40,
-    "min_p": 0.05,
-    "typical_p": 1.0,
-    "repeat_penalty": 1.1,
-    "presence_penalty": 0.0,
-    "frequency_penalty": 0.0,
-    "mirostat_mode": 0,
-    "mirostat_tau": 5.0,
-    "mirostat_eta": 0.1,
-    "stop": [],
-}
+# Sampler parameters the sampling node can switch on.  Nothing here is sent
+# unless it was explicitly enabled, so a parameter left off keeps whatever
+# default the model, llama-cpp-python or the llama-server command line sets.
+SAMPLING_KEYS = (
+    "top_k", "min_p", "typical_p", "repeat_penalty", "presence_penalty",
+    "frequency_penalty", "mirostat_mode", "mirostat_tau", "mirostat_eta",
+)
 
 
 def parse_stop_sequences(text: str) -> List[str]:
@@ -324,11 +319,6 @@ def parse_stop_sequences(text: str) -> List[str]:
     return sequences
 
 
-def merge_sampling(sampling: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    merged = dict(DEFAULT_SAMPLING)
-    if sampling:
-        merged.update({k: v for k, v in sampling.items() if v is not None})
-    return merged
 
 
 def build_grammar(spec: Optional[Dict[str, Any]]):
@@ -374,29 +364,30 @@ ws     ::= | " " | "\n" [ \t]{0,20}
 def sampler_kwargs(*, max_tokens: int, temperature: float, top_p: float, seed: int,
                    sampling: Optional[Dict[str, Any]],
                    extra_stop: Optional[List[str]] = None) -> Dict[str, Any]:
-    merged = merge_sampling(sampling)
-    stop = list(merged.get("stop") or [])
-    for sequence in extra_stop or []:
-        if sequence not in stop:
-            stop.append(sequence)
+    """Assemble the request parameters for one generation.
 
+    The four controls on the generation node are always sent; everything else
+    only appears when the sampling node switched it on.
+    """
     kwargs: Dict[str, Any] = {
         "max_tokens": None if max_tokens <= 0 else int(max_tokens),
         "temperature": float(temperature),
         "top_p": float(top_p),
-        "top_k": int(merged["top_k"]),
-        "min_p": float(merged["min_p"]),
-        "typical_p": float(merged["typical_p"]),
-        "repeat_penalty": float(merged["repeat_penalty"]),
-        "presence_penalty": float(merged["presence_penalty"]),
-        "frequency_penalty": float(merged["frequency_penalty"]),
-        "mirostat_mode": int(merged["mirostat_mode"]),
-        "mirostat_tau": float(merged["mirostat_tau"]),
-        "mirostat_eta": float(merged["mirostat_eta"]),
-        "stop": stop,
+        # A negative seed means "random", which llama.cpp expresses as -1.
+        "seed": -1 if seed < 0 else int(seed),
     }
-    # A negative seed means "random", which llama.cpp expresses as -1.
-    kwargs["seed"] = -1 if seed < 0 else int(seed)
+
+    sampling = sampling or {}
+    for key in SAMPLING_KEYS:
+        if sampling.get(key) is not None:
+            kwargs[key] = sampling[key]
+
+    stop = list(sampling.get("stop") or [])
+    for sequence in extra_stop or []:
+        if sequence not in stop:
+            stop.append(sequence)
+    if stop:
+        kwargs["stop"] = stop
     return kwargs
 
 
