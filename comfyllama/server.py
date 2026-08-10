@@ -7,7 +7,9 @@ ComfyUI cancel button responsive during long generations.
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,12 +19,40 @@ from .backend import check_interrupt, progress_bar
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
+# How the Authorization header is built.  ``auto`` picks basic when a user name
+# is present, bearer when only a token is, and sends nothing otherwise.
+AUTH_MODES = ["auto", "bearer", "basic", "none"]
+
+ENV_PREFIX = "env:"
+
 
 class LlamaServerError(RuntimeError):
     """Raised for transport errors and non-2xx responses."""
 
 
-def normalize_base_url(base_url: str) -> str:
+def resolve_secret(value: str, *, field: str = "credential") -> str:
+    """Read a credential, following an ``env:NAME`` indirection.
+
+    Workflow JSON travels with shared graphs and embedded images, so a token
+    typed into a widget leaks easily.  ``env:LLAMA_TOKEN`` keeps the secret in
+    the environment ComfyUI was started with instead.
+    """
+    value = (value or "").strip()
+    if not value.lower().startswith(ENV_PREFIX):
+        return value
+    name = value[len(ENV_PREFIX):].strip()
+    if not name:
+        raise ValueError(f"The {field} says '{ENV_PREFIX}' but names no variable.")
+    resolved = os.environ.get(name)
+    if resolved is None:
+        raise ValueError(
+            f"The {field} refers to the environment variable '{name}', which is "
+            "not set for the process running ComfyUI."
+        )
+    return resolved
+
+
+def _split_url(base_url: str):
     url = (base_url or "").strip()
     if not url:
         raise ValueError("The llama-server URL is empty.")
@@ -32,26 +62,90 @@ def normalize_base_url(base_url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
     if not parsed.hostname:
         raise ValueError(f"'{base_url}' is not a valid llama-server URL.")
+    return parsed
+
+
+def normalize_base_url(base_url: str) -> str:
+    """Clean up a user-typed URL: add the scheme, drop ``/v1`` and any userinfo."""
+    parsed = _split_url(base_url)
+    netloc = parsed.hostname or ""
+    if ":" in netloc:  # IPv6 literal
+        netloc = f"[{netloc}]"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+
+    path = parsed.path.rstrip("/")
     # A trailing /v1 is a common copy/paste from OpenAI clients; the endpoint
     # paths below already include it.
-    if parsed.path.rstrip("/").endswith("/v1"):
-        url = url[: -len("/v1")].rstrip("/")
-    return url
+    if path.endswith("/v1"):
+        path = path[: -len("/v1")]
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, path, "", "")).rstrip("/")
+
+
+def credentials_from_url(base_url: str) -> Tuple[str, str]:
+    """Pull ``user:password`` out of a ``http://user:pass@host`` style URL."""
+    try:
+        parsed = _split_url(base_url)
+    except ValueError:
+        return "", ""
+    return (urllib.parse.unquote(parsed.username or ""),
+            urllib.parse.unquote(parsed.password or ""))
+
+
+def build_auth_header(mode: str, *, api_key: str = "", username: str = "",
+                      password: str = "") -> Optional[str]:
+    """Return the Authorization header value for the chosen mode."""
+    api_key = resolve_secret(api_key, field="API key")
+    username = resolve_secret(username, field="user name")
+    password = resolve_secret(password, field="password")
+
+    if mode == "none":
+        return None
+    if mode == "auto":
+        mode = "basic" if username else ("bearer" if api_key else "none")
+        if mode == "none":
+            return None
+
+    if mode == "bearer":
+        if not api_key:
+            raise ValueError(
+                "Authentication is set to 'bearer' but the api_key field is "
+                "empty. Fill it in, or switch auth to 'none'."
+            )
+        return f"Bearer {api_key}"
+    if mode == "basic":
+        if not username:
+            raise ValueError(
+                "Authentication is set to 'basic' but the username field is "
+                "empty. Fill it in, or switch auth to 'none'."
+            )
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8"))
+        return f"Basic {token.decode('ascii')}"
+    raise ValueError(f"Unknown authentication mode '{mode}'.")
 
 
 class LlamaServer:
     """Connection details for one ``llama-server`` endpoint."""
 
-    def __init__(self, base_url: str, *, api_key: str = "", timeout: float = 300.0,
+    def __init__(self, base_url: str, *, api_key: str = "", username: str = "",
+                 password: str = "", auth: str = "auto", timeout: float = 300.0,
                  model: str = "") -> None:
         self.base_url = normalize_base_url(base_url)
-        self.api_key = (api_key or "").strip()
         self.timeout = float(timeout)
         self.model = (model or "").strip()
+
+        if not (username or password):
+            # Credentials typed straight into the URL count as basic auth.
+            username, password = credentials_from_url(base_url)
+        self.auth = auth
+        self._authorization = build_auth_header(
+            auth, api_key=api_key, username=username, password=password)
         self._opener = self._build_opener()
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<LlamaServer {self.base_url} model={self.model or 'default'!r}>"
+        # Never include the credential itself.
+        auth = "authenticated" if self._authorization else "no auth"
+        return f"<LlamaServer {self.base_url} model={self.model or 'default'!r} {auth}>"
 
     def _build_opener(self):
         host = urllib.parse.urlsplit(self.base_url).hostname or ""
@@ -66,8 +160,8 @@ class LlamaServer:
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self._authorization:
+            headers["Authorization"] = self._authorization
         return headers
 
     def _open(self, path: str, payload: Optional[Dict[str, Any]], method: str):
@@ -79,7 +173,8 @@ class LlamaServer:
             return self._opener.open(request, timeout=self.timeout)
         except urllib.error.HTTPError as exc:
             raise LlamaServerError(f"{url} returned {exc.code}: "
-                                   f"{_error_detail(exc)}") from exc
+                                   f"{_error_detail(exc)}{self._auth_hint(exc.code)}"
+                                   ) from exc
         except urllib.error.URLError as exc:
             raise LlamaServerError(
                 f"Could not reach llama-server at {self.base_url} ({exc.reason}). "
@@ -89,6 +184,16 @@ class LlamaServer:
         except OSError as exc:
             raise LlamaServerError(f"Could not reach llama-server at "
                                    f"{self.base_url} ({exc}).") from exc
+
+    def _auth_hint(self, status: int) -> str:
+        """Extra guidance for the two status codes that mean 'credentials'."""
+        if status not in (401, 403):
+            return ""
+        if not self._authorization:
+            return (" The connect node sent no credentials — set auth to 'bearer' "
+                    "and fill in api_key, or to 'basic' with username/password.")
+        kind = self._authorization.split(" ", 1)[0].lower()
+        return f" The {kind} credentials from the connect node were rejected."
 
     def request(self, path: str, payload: Optional[Dict[str, Any]] = None,
                 method: str = "POST") -> Any:

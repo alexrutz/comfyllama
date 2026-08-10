@@ -33,7 +33,7 @@ rebuilding the graph.
 
 | Node | What it does |
 | --- | --- |
-| **Connect to llama-server** | URL, timeout, optional API key and model name. Checks `/health` so a wrong URL fails immediately. |
+| **Connect to llama-server** | URL, timeout, model name and authentication (bearer token or user/password). Checks `/health` so a wrong URL fails immediately. |
 | **Chat (llama-server)** | System prompt, user prompt and a thinking switch, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
 | **Vision Chat (llama-server)** | Uploads an `IMAGE` batch to a server started with `--mmproj`. |
 | **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
@@ -144,8 +144,36 @@ Notes:
 - Requests to `localhost`/`127.0.0.1` deliberately bypass any `HTTP_PROXY` set
   in the environment.
 - `timeout` is per request; raise it for long generations on slow hardware.
-- Set `api_key` only if the server was started with `--api-key`.
 - Cancelling in ComfyUI aborts the stream immediately.
+
+### Authentication
+
+The connect node speaks two schemes, chosen with the `auth` widget:
+
+| `auth` | Header sent |
+| --- | --- |
+| `auto` (default) | Basic when `username` is filled in, Bearer when only `api_key` is, nothing when neither. |
+| `bearer` | `Authorization: Bearer <api_key>` — for llama-server started with `--api-key`. |
+| `basic` | `Authorization: Basic <base64 user:password>` — for an nginx/Caddy/Traefik reverse proxy in front of llama-server. |
+| `none` | Never sends credentials, even with the fields filled in. |
+
+Forcing `bearer` or `basic` without its field filled in fails with a clear
+error instead of silently sending an unauthenticated request. Credentials may
+also be written straight into the URL (`http://user:pass@host:8080`); they are
+stripped from the URL and used as basic auth. A 401/403 reply says whether
+credentials were rejected or never sent.
+
+**Keeping secrets out of the workflow file:** widget values are saved into
+workflow JSON in plain text, and that JSON travels with shared graphs and gets
+embedded in generated PNGs. All three credential fields therefore accept an
+`env:NAME` indirection that reads the value from the environment ComfyUI runs
+in:
+
+```
+api_key:  env:LLAMA_API_KEY
+username: llama
+password: env:LLAMA_PASSWORD
+```
 
 ## Models
 

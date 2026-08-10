@@ -6,6 +6,7 @@ port, so the nodes are exercised over a real socket, including SSE streaming.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -18,7 +19,9 @@ from test_nodes import HAVE_IMAGING, sampling_args  # noqa: F401
 from comfyllama.nodes import remote
 from comfyllama.nodes.generation import LlamaCppGrammar, LlamaCppSampling
 from comfyllama.server import (LlamaServer, LlamaServerError, apply_grammar,
-                               apply_thinking, build_payload, normalize_base_url)
+                               apply_thinking, build_auth_header, build_payload,
+                               credentials_from_url, normalize_base_url,
+                               resolve_secret)
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -196,6 +199,82 @@ class TestUrlHandling(unittest.TestCase):
                 os.environ["http_proxy"] = previous
 
 
+class TestAuthHeaders(unittest.TestCase):
+    def test_auto_picks_bearer_basic_or_nothing(self):
+        self.assertIsNone(build_auth_header("auto"))
+        self.assertEqual(build_auth_header("auto", api_key="tok"), "Bearer tok")
+        self.assertEqual(build_auth_header("auto", username="u", password="p"),
+                         "Basic " + base64.b64encode(b"u:p").decode())
+        # A username wins over a token, since basic auth needs both fields.
+        self.assertTrue(build_auth_header("auto", api_key="tok", username="u")
+                        .startswith("Basic "))
+
+    def test_none_suppresses_filled_in_credentials(self):
+        self.assertIsNone(build_auth_header("none", api_key="tok", username="u"))
+
+    def test_basic_allows_an_empty_password(self):
+        self.assertEqual(build_auth_header("basic", username="u"),
+                         "Basic " + base64.b64encode(b"u:").decode())
+
+    def test_forcing_a_mode_without_its_field_is_an_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            build_auth_header("bearer", username="u", password="p")
+        self.assertIn("api_key", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            build_auth_header("basic", api_key="tok")
+        self.assertIn("username", str(ctx.exception))
+
+    def test_unicode_credentials_are_encoded_as_utf8(self):
+        header = build_auth_header("basic", username="jörg", password="pä")
+        self.assertEqual(header,
+                         "Basic " + base64.b64encode("jörg:pä".encode()).decode())
+
+    def test_env_indirection_keeps_secrets_out_of_the_workflow(self):
+        os.environ["COMFYLLAMA_TEST_TOKEN"] = "from-env"
+        try:
+            self.assertEqual(build_auth_header("bearer", api_key="env:COMFYLLAMA_TEST_TOKEN"),
+                             "Bearer from-env")
+            self.assertEqual(resolve_secret(" env:COMFYLLAMA_TEST_TOKEN "), "from-env")
+        finally:
+            del os.environ["COMFYLLAMA_TEST_TOKEN"]
+
+    def test_missing_environment_variable_names_the_variable(self):
+        os.environ.pop("COMFYLLAMA_TEST_MISSING", None)
+        with self.assertRaises(ValueError) as ctx:
+            build_auth_header("bearer", api_key="env:COMFYLLAMA_TEST_MISSING")
+        self.assertIn("COMFYLLAMA_TEST_MISSING", str(ctx.exception))
+
+    def test_plain_values_are_passed_through_untouched(self):
+        self.assertEqual(resolve_secret("  sk-literal  "), "sk-literal")
+        self.assertEqual(resolve_secret(""), "")
+
+    def test_credentials_in_the_url_are_extracted_and_stripped(self):
+        self.assertEqual(credentials_from_url("http://bob:s3cr3t@host:8080"),
+                         ("bob", "s3cr3t"))
+        self.assertEqual(normalize_base_url("http://bob:s3cr3t@host:8080"),
+                         "http://host:8080")
+        self.assertEqual(credentials_from_url("http://host:8080"), ("", ""))
+        # Percent-encoded characters are decoded.
+        self.assertEqual(credentials_from_url("http://bo%40b:p%3Aw@host")[0], "bo@b")
+
+    def test_url_credentials_become_basic_auth(self):
+        connection = LlamaServer("http://bob:s3cr3t@host:8080")
+        self.assertEqual(connection.base_url, "http://host:8080")
+        self.assertEqual(connection._headers()["Authorization"],
+                         "Basic " + base64.b64encode(b"bob:s3cr3t").decode())
+
+    def test_explicit_fields_win_over_url_credentials(self):
+        connection = LlamaServer("http://bob:s3cr3t@host:8080", username="alice",
+                                 password="other")
+        self.assertEqual(connection._headers()["Authorization"],
+                         "Basic " + base64.b64encode(b"alice:other").decode())
+
+    def test_repr_does_not_leak_the_credential(self):
+        text = repr(LlamaServer("http://host:8080", api_key="super-secret"))
+        self.assertNotIn("super-secret", text)
+        self.assertIn("authenticated", text)
+
+
 class TestPayloads(unittest.TestCase):
     def test_openai_payload_keeps_max_tokens_and_sends_nothing_extra(self):
         from comfyllama.backend import sampler_kwargs
@@ -280,6 +359,52 @@ class TestConnectNode(ServerTestCase):
             api_key="secret")
         self.assertEqual(self.requests_to("/health")[0]["authorization"],
                          "Bearer secret")
+
+    def test_username_and_password_are_sent_as_basic_auth(self):
+        remote.LlamaServerConnect().connect(
+            base_url=self.stub.url, timeout=10, check_connection=True,
+            username="bob", password="s3cr3t")
+        self.assertEqual(self.requests_to("/health")[0]["authorization"],
+                         "Basic " + base64.b64encode(b"bob:s3cr3t").decode())
+
+    def test_basic_credentials_are_reused_for_generation_requests(self):
+        connection = self.connect(username="bob", password="s3cr3t")
+        remote.LlamaServerChat().generate(
+            connection, "", "hi", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0)
+        expected = "Basic " + base64.b64encode(b"bob:s3cr3t").decode()
+        self.assertEqual(self.requests_to("/v1/chat/completions")[0]["authorization"],
+                         expected)
+
+    def test_auth_none_sends_no_header_even_with_a_token(self):
+        remote.LlamaServerConnect().connect(
+            base_url=self.stub.url, timeout=10, check_connection=True,
+            auth="none", api_key="secret")
+        self.assertIsNone(self.requests_to("/health")[0]["authorization"])
+
+    def test_unauthenticated_request_is_sent_without_the_header(self):
+        remote.LlamaServerConnect().connect(
+            base_url=self.stub.url, timeout=10, check_connection=True)
+        self.assertIsNone(self.requests_to("/health")[0]["authorization"])
+
+    def test_rejected_credentials_explain_themselves(self):
+        self.stub.state["health_status"] = 401
+        self.stub.state["health"] = {"error": {"message": "unauthorized"}}
+        with self.assertRaises(LlamaServerError) as ctx:
+            remote.LlamaServerConnect().connect(
+                base_url=self.stub.url, timeout=10, check_connection=True,
+                api_key="wrong")
+        message = str(ctx.exception)
+        self.assertIn("401", message)
+        self.assertIn("bearer credentials", message)
+
+    def test_missing_credentials_point_at_the_connect_node(self):
+        self.stub.state["health_status"] = 401
+        self.stub.state["health"] = {"error": {"message": "unauthorized"}}
+        with self.assertRaises(LlamaServerError) as ctx:
+            remote.LlamaServerConnect().connect(
+                base_url=self.stub.url, timeout=10, check_connection=True)
+        self.assertIn("sent no credentials", str(ctx.exception))
 
 
 class TestChatNode(ServerTestCase):

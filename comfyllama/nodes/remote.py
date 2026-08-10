@@ -13,8 +13,8 @@ from typing import Tuple
 from ..backend import sampler_kwargs
 from ..images import images_to_content
 from ..reasoning import combine, split_thinking
-from ..server import (LlamaServer, LlamaServerError, apply_grammar, apply_thinking,
-                      build_payload, stream_chat, stream_completion)
+from ..server import (AUTH_MODES, LlamaServer, LlamaServerError, apply_grammar,
+                      apply_thinking, build_payload, stream_chat, stream_completion)
 from .common import (CATEGORY_SERVER, generation_inputs, is_changed_for_seed,
                      thinking_input)
 from .generation import _messages
@@ -62,9 +62,30 @@ class LlamaServerConnect:
                     "tooltip": "Model name to request. 'auto' uses the first "
                                "model the server reports.",
                 }),
+                "auth": (AUTH_MODES, {
+                    "default": "auto",
+                    "tooltip": "How to authenticate. 'auto' uses basic when a "
+                               "username is filled in, bearer when only api_key "
+                               "is, and nothing otherwise. 'none' never sends "
+                               "credentials.",
+                }),
                 "api_key": ("STRING", {
                     "default": "",
-                    "tooltip": "Only needed when llama-server runs with --api-key.",
+                    "tooltip": "Bearer token, for llama-server started with "
+                               "--api-key. Accepts 'env:NAME' to read the token "
+                               "from an environment variable instead of storing "
+                               "it in the workflow.",
+                }),
+                "username": ("STRING", {
+                    "default": "",
+                    "tooltip": "HTTP basic auth user, e.g. for a reverse proxy "
+                               "in front of llama-server. Accepts 'env:NAME'.",
+                }),
+                "password": ("STRING", {
+                    "default": "",
+                    "tooltip": "HTTP basic auth password. Accepts 'env:NAME' — "
+                               "worth using, since widget values are saved into "
+                               "the workflow JSON in plain text.",
                 }),
             },
         }
@@ -75,8 +96,11 @@ class LlamaServerConnect:
     CATEGORY = CATEGORY_SERVER
     DESCRIPTION = "Connect to a running llama-server instance."
 
-    def connect(self, base_url, timeout, check_connection, model="auto", api_key=""):
-        connection = LlamaServer(base_url, api_key=api_key, timeout=timeout, model=model)
+    def connect(self, base_url, timeout, check_connection, model="auto", auth="auto",
+                api_key="", username="", password=""):
+        connection = LlamaServer(base_url, api_key=api_key, username=username,
+                                 password=password, auth=auth, timeout=timeout,
+                                 model=model)
         if check_connection:
             status = connection.health().get("status")
             if status and status != "ok":
