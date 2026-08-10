@@ -35,10 +35,19 @@ rebuilding the graph.
 | --- | --- |
 | **Connect to llama-server** | URL, timeout, model name and authentication (bearer token or user/password). Checks `/health` so a wrong URL fails immediately. |
 | **Chat (llama-server)** | System prompt, user prompt and a thinking switch, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
+| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, switchable, with a passthrough that skips the model. |
 | **Vision Chat (llama-server)** | Uploads an `IMAGE` batch to a server started with `--mmproj`. |
 | **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
 | **Token Count (llama-server)** | Counts tokens via `/tokenize`. |
 | **Server Info (llama-server)** | Model name, context size and available models as JSON. |
+
+### General purpose
+
+These have nothing to do with llama.cpp and work on their own.
+
+| Node | What it does |
+| --- | --- |
+| **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height. |
 
 ## Install
 
@@ -90,6 +99,38 @@ repetition penalty and nothing else — it will not quietly pin `top_k` or
 `min_p` to this node's defaults. With every switch off it behaves exactly like
 not connecting the node at all. `mirostat_tau` and `mirostat_eta` are
 meaningless without the mode, so those three share one switch.
+
+## Prompt presets in one node
+
+**Chat with Prompt Presets** holds up to six system prompts and switches
+between them with the `active` dropdown:
+
+- `slot_count` sets how many presets the node offers; the rest are hidden.
+- Each preset has a **name** — which is what the `active` dropdown lists — and
+  its **system prompt**. Rename them to whatever the presets do
+  ("Enhance", "Translate", "Negative prompt").
+- **`passthrough`** hands the prompt straight to the output. The model is not
+  contacted at all: the server input is lazy, so in passthrough mode nothing on
+  the LLM side of the graph runs.
+- Each preset has its own optional **`extra_N`** input, appended to the incoming
+  prompt with `extra_separator` (default a blank line) — for system prompts that
+  expect two instructions you would rather keep in separate boxes. Only the
+  active preset's extra input is read, and because those inputs are lazy too,
+  the nodes feeding an inactive one never execute. The node labels them
+  `extra_N (inactive)` so it is clear which one is live.
+- Outputs are `text`, `thinking` and `active` (the preset that ran, or
+  `passthrough`), so the rest of the graph can tell what happened.
+
+## Empty latent by aspect ratio
+
+Pick a ratio (`1:1` and `2:3` lead the list) and a megapixel budget instead of
+typing pixel dimensions. 1.0 MP means 1024x1024, so `2:3` at 1.0 MP gives
+840x1256 (832x1280 with `divisible_by` set to 64). Both edges are rounded to
+`divisible_by` — 8 is the smallest a latent
+can express, 64 suits SDXL — which is why the area lands near, not exactly on,
+the requested megapixels. `latent_format` switches between 4-channel
+(SD1.5/SDXL) and 16-channel (SD3/Flux) latents, and the node also outputs the
+resulting `width` and `height`.
 
 ## Prompts and reasoning models
 

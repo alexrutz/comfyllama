@@ -305,18 +305,23 @@ SAMPLING_KEYS = (
 )
 
 
+def decode_escapes(text: str) -> str:
+    """Turn a ``\\n`` typed into a widget into a real newline.
+
+    The latin-1/backslashreplace detour keeps non-ASCII characters intact,
+    which a plain utf-8 round trip through ``unicode_escape`` would mangle.
+    """
+    if "\\" not in (text or ""):
+        return text or ""
+    try:
+        return text.encode("latin-1", "backslashreplace").decode("unicode_escape")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
+
+
 def parse_stop_sequences(text: str) -> List[str]:
     """One stop sequence per line; ``\\n`` and friends are unescaped."""
-    sequences = []
-    for line in (text or "").splitlines():
-        if not line.strip():
-            continue
-        try:
-            decoded = line.encode("utf-8").decode("unicode_escape")
-        except UnicodeDecodeError:
-            decoded = line
-        sequences.append(decoded)
-    return sequences
+    return [decode_escapes(line) for line in (text or "").splitlines() if line.strip()]
 
 
 

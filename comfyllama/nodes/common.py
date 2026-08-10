@@ -8,6 +8,8 @@ CATEGORY = "llama.cpp"
 CATEGORY_SERVER = "llama.cpp/server"
 CATEGORY_ADVANCED = "llama.cpp/advanced"
 CATEGORY_UTILS = "llama.cpp/utils"
+# General-purpose nodes that have nothing to do with llama.cpp.
+CATEGORY_LATENT = "comfyllama/latent"
 
 MAX_SEED = 0xFFFFFFFFFFFFFFFF
 

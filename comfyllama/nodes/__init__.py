@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from .generation import (LlamaCppChat, LlamaCppComplete, LlamaCppGrammar,
                          LlamaCppSampling, LlamaCppVisionChat)
+from .latent import EmptyLatentByAspectRatio
 from .loaders import LlamaCppLoader, LlamaCppUnload, LlamaCppVisionLoader
+from .presets import LlamaServerPresetChat
 from .remote import (LlamaServerChat, LlamaServerComplete, LlamaServerConnect,
                      LlamaServerInfo, LlamaServerTokenCount, LlamaServerVisionChat)
 from .utils import (LlamaCppMessage, LlamaCppMessagesToText, LlamaCppPreviewText,
@@ -30,6 +32,8 @@ NODE_CLASS_MAPPINGS = {
     "LlamaServerComplete": LlamaServerComplete,
     "LlamaServerTokenCount": LlamaServerTokenCount,
     "LlamaServerInfo": LlamaServerInfo,
+    "LlamaServerPresetChat": LlamaServerPresetChat,
+    "EmptyLatentByAspectRatio": EmptyLatentByAspectRatio,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -52,6 +56,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LlamaServerComplete": "Text Completion (llama-server)",
     "LlamaServerTokenCount": "Token Count (llama-server)",
     "LlamaServerInfo": "Server Info (llama-server)",
+    "LlamaServerPresetChat": "Chat with Prompt Presets (llama-server)",
+    "EmptyLatentByAspectRatio": "Empty Latent (Aspect Ratio + Megapixels)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
