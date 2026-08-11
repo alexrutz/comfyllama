@@ -47,7 +47,7 @@ These have nothing to do with llama.cpp and work on their own.
 
 | Node | What it does |
 | --- | --- |
-| **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height. |
+| **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
 
 ## Install
 
@@ -126,11 +126,25 @@ between them with the `active` dropdown:
 Pick a ratio (`1:1` and `2:3` lead the list) and a megapixel budget instead of
 typing pixel dimensions. 1.0 MP means 1024x1024, so `2:3` at 1.0 MP gives
 840x1256 (832x1280 with `divisible_by` set to 64). Both edges are rounded to
-`divisible_by` — 8 is the smallest a latent
-can express, 64 suits SDXL — which is why the area lands near, not exactly on,
-the requested megapixels. `latent_format` switches between 4-channel
-(SD1.5/SDXL) and 16-channel (SD3/Flux) latents, and the node also outputs the
-resulting `width` and `height`.
+`divisible_by` — 8 is the smallest a latent can express, 64 suits SDXL — which
+is why the area lands near, not exactly on, the requested megapixels. The node
+also outputs the resulting `width` and `height`.
+
+`latent_format` sets the shape of the latent:
+
+| Format | Latent |
+| --- | --- |
+| `SD1.5 / SDXL (4 channels)` | 4 channels, 1/8 scale |
+| `SD3 / Flux (16 channels)` | 16 channels, 1/8 scale |
+| `Krea 2 (16 channels)` | 16 channels, 1/8 scale, edges kept on a 16 px grid |
+
+Krea 2 decodes through the Qwen-Image autoencoder — 16 channels at f8, the same
+tensor shape ComfyUI's own Krea 2 workflow builds with `EmptySD3LatentImage` —
+and its transformer patchifies that latent in 2x2 blocks, so the Krea 2 entry
+raises the rounding to 16 px even when `divisible_by` is 8. A coarser
+`divisible_by` still wins. Krea 2 is documented as covering 1K to 2K, i.e.
+`megapixels` between 1.0 and 2.0; at 1.0 the presets come out as 1024x1024
+(1:1), 832x1248 (2:3) and 1360x768 (16:9).
 
 ## Prompts and reasoning models
 

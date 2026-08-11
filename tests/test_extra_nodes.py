@@ -15,8 +15,8 @@ from test_nodes import HAVE_IMAGING  # noqa: F401
 from test_server_nodes import ServerTestCase
 
 from comfyllama.backend import decode_escapes
-from comfyllama.nodes.latent import (LATENT_FORMATS, RATIO_LABELS, EmptyLatentByAspectRatio,
-                                     resolve_dimensions)
+from comfyllama.nodes.latent import (LATENT_FORMATS, RATIO_LABELS,
+                                     EmptyLatentByAspectRatio, resolve_dimensions)
 from comfyllama.nodes.presets import (MAX_SLOTS, LlamaServerPresetChat, join_prompt,
                                       resolve_slot, slot_names)
 
@@ -110,7 +110,13 @@ class TestEmptyLatentNode(unittest.TestCase):
         label = "SD3 / Flux (16 channels)"
         with fake_torch():
             latent, _, _ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1, label)
-        self.assertEqual(latent["samples"].shape[1], LATENT_FORMATS[label])
+        self.assertEqual(latent["samples"].shape[1], LATENT_FORMATS[label].channels)
+
+    def test_an_unknown_format_falls_back_instead_of_failing(self):
+        with fake_torch():
+            latent, _, _ = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, "something else")
+        self.assertEqual(latent["samples"].shape[1], 4)
 
     def test_every_ratio_produces_a_whole_number_latent(self):
         with fake_torch() as torch_stub:
@@ -124,6 +130,50 @@ class TestEmptyLatentNode(unittest.TestCase):
     def test_the_real_tensor_is_zeroed(self):
         latent, _, _ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1)
         self.assertEqual(float(latent["samples"].abs().sum()), 0.0)
+
+
+class TestKrea2Format(unittest.TestCase):
+    """Krea 2 decodes through a 16-channel f8 autoencoder, patchified 2x2."""
+
+    LABEL = "Krea 2 (16 channels)"
+
+    def test_the_format_is_offered(self):
+        self.assertIn(self.LABEL, LATENT_FORMATS)
+        spec = LATENT_FORMATS[self.LABEL]
+        self.assertEqual((spec.channels, spec.downscale), (16, 8))
+
+    def test_latent_shape_matches_a_16_channel_f8_autoencoder(self):
+        with fake_torch():
+            latent, width, height = EmptyLatentByAspectRatio().generate(
+                "2:3", 1.0, 8, 1, self.LABEL)
+        self.assertEqual(latent["samples"].shape, (1, 16, height // 8, width // 8))
+
+    def test_edges_stay_on_a_16_pixel_grid(self):
+        for ratio in RATIO_LABELS:
+            with self.subTest(ratio=ratio):
+                width, height = resolve_dimensions(
+                    ratio, 1.5, 8, LATENT_FORMATS[self.LABEL].minimum_multiple)
+                self.assertEqual((width % 16, height % 16), (0, 0))
+
+    def test_the_grid_floor_is_applied_even_at_divisible_by_8(self):
+        spec = LATENT_FORMATS[self.LABEL]
+        # 2:3 at 1 MP is 840x1256 on an 8 grid, which is not a multiple of 16.
+        self.assertEqual(resolve_dimensions("2:3", 1.0, 8), (840, 1256))
+        self.assertEqual(resolve_dimensions("2:3", 1.0, 8, spec.minimum_multiple),
+                         (832, 1248))
+
+    def test_a_coarser_choice_still_wins(self):
+        spec = LATENT_FORMATS[self.LABEL]
+        width, height = resolve_dimensions("2:3", 1.0, 64, spec.minimum_multiple)
+        self.assertEqual((width % 64, height % 64), (0, 0))
+
+    def test_reported_size_matches_the_latent_that_was_built(self):
+        with fake_torch() as torch_stub:
+            _, width, height = EmptyLatentByAspectRatio().generate(
+                "16:9", 2.0, 8, 1, self.LABEL)
+        shape, _ = torch_stub.calls[0]
+        self.assertEqual((shape[3] * 8, shape[2] * 8), (width, height))
+        self.assertEqual((width % 16, height % 16), (0, 0))
 
 
 class TestPresetSelection(unittest.TestCase):
