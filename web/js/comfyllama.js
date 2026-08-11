@@ -149,6 +149,7 @@ function applyPresetState(node) {
 		const inUse = index <= slotCount;
 		showWidget(widgetByName(node, `name_${index}`), inUse);
 		showWidget(widgetByName(node, `system_${index}`), inUse);
+		showWidget(widgetByName(node, `model_${index}`), inUse);
 
 		// The matching extra input is only read while its slot is the active
 		// one; say so in the label rather than dropping the connection.

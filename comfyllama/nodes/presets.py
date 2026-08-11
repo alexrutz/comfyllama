@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..backend import decode_escapes
 from .common import CATEGORY_SERVER, generation_inputs, is_changed_for_seed, thinking_input
 from .generation import _messages
-from .remote import _chat
+from .remote import _chat, model_input
 
 MAX_SLOTS = 6
 
@@ -89,6 +89,7 @@ def _slot_inputs() -> Dict[str, Any]:
             "default": DEFAULT_SYSTEM_PROMPTS.get(index, ""),
             "multiline": True,
         })
+        inputs[f"model_{index}"] = model_input(f"'{DEFAULT_NAMES[index - 1]}'")
     return inputs
 
 
@@ -199,6 +200,8 @@ class LlamaServerPresetChat:
         system = str(slots.get(f"system_{index}") or "")
         full_prompt = join_prompt(prompt, slots.get(f"extra_{index}"), extra_separator)
         conversation = _messages(system, full_prompt, None)
+        # Each preset may name its own model, which is the point of a router.
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
-                              top_p, seed, sampling, grammar)
+                              top_p, seed, sampling, grammar,
+                              str(slots.get(f"model_{index}") or ""))
         return (text, thought, names[index - 1])

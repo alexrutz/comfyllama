@@ -252,6 +252,7 @@ class TestPresetChatNode(ServerTestCase):
         for index in range(1, MAX_SLOTS + 1):
             values[f"name_{index}"] = f"Preset {index}"
             values[f"system_{index}"] = f"system {index}"
+            values[f"model_{index}"] = ""
         values.update(overrides)
         return values
 
@@ -299,6 +300,21 @@ class TestPresetChatNode(ServerTestCase):
             **self.widgets(active="Preset 1", extra_1="b", extra_separator=" -- "))
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]
         self.assertEqual(sent["messages"][1]["content"], "a lighthouse -- b")
+
+    def test_each_preset_can_name_its_own_model(self):
+        # The point of a router: a small model for one job, a big one for another.
+        self.NODE().generate(
+            server=self.connect(),
+            **self.widgets(active="Preset 2", model_1="small", model_2="big-model"))
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertEqual(sent["model"], "big-model")
+
+    def test_a_preset_without_a_model_falls_back_to_the_connection(self):
+        self.NODE().generate(
+            server=self.connect(model="stub-model"),
+            **self.widgets(active="Preset 2"))
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertEqual(sent["model"], "stub-model")
 
     def test_thinking_is_split_out_like_the_other_chat_nodes(self):
         self.stub.state["pieces"] = ["<think>hmm</think>", "Answer."]

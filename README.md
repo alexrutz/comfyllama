@@ -33,9 +33,9 @@ rebuilding the graph.
 
 | Node | What it does |
 | --- | --- |
-| **Connect to llama-server** | URL, timeout, model name and authentication (bearer token or user/password). Checks `/health` so a wrong URL fails immediately. |
+| **Connect to llama-server** | URL, timeout, default model and authentication (bearer token or user/password). Probes the endpoint so a wrong URL fails immediately, while tolerating router front ends. |
 | **Chat (llama-server)** | System prompt, user prompt and a thinking switch, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
-| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, switchable, with a passthrough that skips the model. |
+| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, each with its own model, switchable, with a passthrough that skips the model. |
 | **Vision Chat (llama-server)** | Uploads an `IMAGE` batch to a server started with `--mmproj`. |
 | **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
 | **Token Count (llama-server)** | Counts tokens via `/tokenize`. |
@@ -112,6 +112,9 @@ between them with the `active` dropdown:
 - **`passthrough`** hands the prompt straight to the output. The model is not
   contacted at all: the server input is lazy, so in passthrough mode nothing on
   the LLM side of the graph runs.
+- Each preset has its own **`model_N`** field, so different presets can run on
+  different models when llama-server is in router mode. Empty falls back to the
+  connect node.
 - Each preset has its own optional **`extra_N`** input, appended to the incoming
   prompt with `extra_separator` (default a blank line) — for system prompts that
   expect two instructions you would rather keep in separate boxes. Only the
@@ -194,12 +197,39 @@ the OpenAI-compatible `/v1/chat/completions` API and llama.cpp's native
 
 Notes:
 
-- The URL may include a trailing `/v1` — it is stripped. `model` can stay on
-  `auto`, which asks the server what it has loaded.
+- The URL may include a trailing `/v1` — it is stripped.
 - Requests to `localhost`/`127.0.0.1` deliberately bypass any `HTTP_PROXY` set
   in the environment.
 - `timeout` is per request; raise it for long generations on slow hardware.
 - Cancelling in ComfyUI aborts the stream immediately.
+
+### Choosing a model (router mode)
+
+`model` on the connect node is the default for everything using that
+connection, and **every generation node has its own `model` field that
+overrides it** — including one per preset on the prompt-preset node, so a
+router can serve a small model for one preset and a large one for another.
+
+Resolution order is: the node's `model` → the connect node's `model` → nothing
+at all. `auto` (or an empty field) means *nothing is pinned* and the server
+picks, which is what a plain single-model llama-server wants. In router mode,
+name the model you want; **Server Info (llama-server)** lists what the endpoint
+offers, and asking for a model it does not have produces an error that names
+the alternatives.
+
+The model list is fetched at most once per connection and never during
+generation.
+
+A router in front of llama-server usually implements only the
+OpenAI-compatible routes, so `/health` may be missing and `/props`,
+`/tokenize` and the native `/completion` endpoint may not exist. The connect
+node copes: it falls back to `/v1/models` when `/health` is unavailable, and a
+server that reports "still loading" is a console warning rather than a failed
+graph — routers load models on demand. It still fails on a URL that cannot be
+reached, on rejected credentials, and on an endpoint where neither `/health`
+nor `/v1/models` answers. **Server Info** works without `/props`; **Token
+Count (llama-server)** and **Text Completion (llama-server)** need the native
+endpoints, so use the chat nodes if your router does not proxy them.
 
 ### Authentication
 

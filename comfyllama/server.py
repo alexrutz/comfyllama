@@ -23,11 +23,23 @@ LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 # is present, bearer when only a token is, and sends nothing otherwise.
 AUTH_MODES = ["auto", "bearer", "basic", "none"]
 
+# Values that mean "do not pin a model, let the server choose".
+AUTO_MODEL = {"auto", "default", "server default"}
+
 ENV_PREFIX = "env:"
 
 
 class LlamaServerError(RuntimeError):
-    """Raised for transport errors and non-2xx responses."""
+    """Raised for transport errors and non-2xx responses.
+
+    ``status`` is the HTTP status code, or ``None`` when the server could not
+    be reached at all — the difference matters for deciding whether a failed
+    probe is fatal.
+    """
+
+    def __init__(self, message: str, *, status: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def resolve_secret(value: str, *, field: str = "credential") -> str:
@@ -133,6 +145,7 @@ class LlamaServer:
         self.base_url = normalize_base_url(base_url)
         self.timeout = float(timeout)
         self.model = (model or "").strip()
+        self._model_list: Optional[List[str]] = None
 
         if not (username or password):
             # Credentials typed straight into the URL count as basic auth.
@@ -172,9 +185,13 @@ class LlamaServer:
         try:
             return self._opener.open(request, timeout=self.timeout)
         except urllib.error.HTTPError as exc:
-            raise LlamaServerError(f"{url} returned {exc.code}: "
-                                   f"{_error_detail(exc)}{self._auth_hint(exc.code)}"
-                                   ) from exc
+            detail = _error_detail(exc)
+            raise LlamaServerError(
+                f"{url} returned {exc.code}: {detail}"
+                f"{self._auth_hint(exc.code)}"
+                f"{self._model_hint(path, exc.code, detail, payload)}",
+                status=exc.code,
+            ) from exc
         except urllib.error.URLError as exc:
             raise LlamaServerError(
                 f"Could not reach llama-server at {self.base_url} ({exc.reason}). "
@@ -184,6 +201,23 @@ class LlamaServer:
         except OSError as exc:
             raise LlamaServerError(f"Could not reach llama-server at "
                                    f"{self.base_url} ({exc}).") from exc
+
+    def _model_hint(self, path: str, status: int, detail: str,
+                    payload: Optional[Dict[str, Any]]) -> str:
+        """Name the models a router actually offers when one was rejected."""
+        if status not in (400, 404, 422, 503):
+            return ""
+        if path == "/v1/models" or "model" not in detail.lower():
+            return ""
+        requested = (payload or {}).get("model")
+        available = self.available_models()
+        if not available:
+            return ""
+        listing = ", ".join(available)
+        if requested:
+            return (f" The server does not appear to offer '{requested}'. "
+                    f"Available: {listing}.")
+        return f" Models this server offers: {listing}."
 
     def _auth_hint(self, status: int) -> str:
         """Extra guidance for the two status codes that mean 'credentials'."""
@@ -231,19 +265,67 @@ class LlamaServer:
         return self.request("/props", method="GET") or {}
 
     def models(self) -> List[str]:
+        """Model ids from ``/v1/models``. Raises if the endpoint is unusable."""
         payload = self.request("/v1/models", method="GET") or {}
-        return [str(entry.get("id")) for entry in payload.get("data", [])
-                if entry.get("id")]
+        names = [str(entry.get("id")) for entry in payload.get("data", [])
+                 if entry.get("id")]
+        self._model_list = names
+        return names
 
-    def resolve_model(self) -> str:
-        """The model name to send, resolved from the server when unset."""
-        if self.model and self.model.lower() != "auto":
-            return self.model
+    def available_models(self) -> List[str]:
+        """Cached model list that never raises — for hints and dropdowns.
+
+        A router front end can list a dozen models, and the list is stable for
+        the lifetime of a connection, so it is fetched at most once.
+        """
+        if self._model_list is None:
+            try:
+                self.models()
+            except LlamaServerError:
+                self._model_list = []
+        return list(self._model_list or [])
+
+    def resolve_model(self, override: str = "") -> str:
+        """The model name to send with a request.
+
+        An empty result means "send no model field at all", which lets a plain
+        llama-server ignore it and a router pick its own default. The node's
+        own override wins over the one set on the connection.
+        """
+        for candidate in (override, self.model):
+            candidate = (candidate or "").strip()
+            if candidate and candidate.lower() not in AUTO_MODEL:
+                return candidate
+        return ""
+
+    def probe(self) -> str:
+        """Check the endpoint answers, and report what it said.
+
+        Raises only when the server cannot be reached or rejects the
+        credentials.  A router in front of llama-server often has no
+        ``/health`` at all, or reports "not ready" until the first request
+        loads a model, and neither is a reason to fail the graph.
+        """
         try:
-            available = self.models()
-        except LlamaServerError:
-            available = []
-        return available[0] if available else ""
+            status = str(self.health().get("status") or "ok")
+        except LlamaServerError as exc:
+            if exc.status is None or exc.status in (401, 403):
+                raise  # unreachable, or the credentials are wrong
+            # Reachable but /health is not usable here. Confirm with the
+            # OpenAI-compatible route every router implements.
+            try:
+                self.models()
+            except LlamaServerError as models_exc:
+                if models_exc.status is None or models_exc.status in (401, 403):
+                    raise
+                raise LlamaServerError(
+                    f"{self.base_url} answered, but neither /health nor "
+                    f"/v1/models worked ({exc.status} and {models_exc.status}). "
+                    "Is this really a llama-server endpoint?",
+                    status=models_exc.status,
+                ) from models_exc
+            return "unknown"
+        return status
 
     def tokenize(self, text: str) -> List[int]:
         payload = self.request("/tokenize", {"content": text}) or {}
@@ -307,6 +389,19 @@ def build_payload(kwargs: Dict[str, Any], *, native: bool) -> Dict[str, Any]:
     return payload
 
 
+def apply_model(payload: Dict[str, Any], server: "LlamaServer",
+                override: str = "") -> Dict[str, Any]:
+    """Pin the request to a model, or leave the choice to the server.
+
+    Router front ends dispatch on this field — including on the native
+    endpoints, which plain llama-server simply ignores it on.
+    """
+    model = server.resolve_model(override)
+    if model:
+        payload["model"] = model
+    return payload
+
+
 def apply_thinking(payload: Dict[str, Any], mode: str) -> Dict[str, Any]:
     """Ask the server's chat template to enable or disable reasoning.
 
@@ -360,9 +455,6 @@ def stream_chat(server: LlamaServer, messages: List[Dict[str, Any]],
     """
     body = dict(payload)
     body["messages"] = messages
-    model = server.resolve_model()
-    if model:
-        body["model"] = model
 
     pieces: List[str] = []
     reasoning: List[str] = []

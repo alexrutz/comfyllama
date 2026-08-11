@@ -14,19 +14,34 @@ from ..backend import sampler_kwargs
 from ..images import images_to_content
 from ..reasoning import combine, split_thinking
 from ..server import (AUTH_MODES, LlamaServer, LlamaServerError, apply_grammar,
-                      apply_thinking, build_payload, stream_chat, stream_completion)
+                      apply_model, apply_thinking, build_payload, stream_chat,
+                      stream_completion)
 from .common import (CATEGORY_SERVER, generation_inputs, is_changed_for_seed,
                      thinking_input)
 from .generation import _messages
 
 
+def model_input(where: str = "this request") -> tuple:
+    """The per-node model override, for servers running in router mode."""
+    return ("STRING", {
+        "default": "",
+        "multiline": False,
+        "tooltip": f"Model to use for {where}. Overrides the connect node. "
+                   "Leave empty to use whatever that node is set to; with both "
+                   "empty no model is pinned and the server picks. Needed when "
+                   "llama-server runs in router mode with several models — "
+                   "'Server Info (llama-server)' lists the names.",
+    })
+
+
 def _chat(connection, conversation, thinking, max_tokens, temperature, top_p, seed,
-          sampling, grammar) -> Tuple[str, str]:
+          sampling, grammar, model="") -> Tuple[str, str]:
     """Run a remote chat completion, split into ``(answer, thinking)``."""
     kwargs = sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
                             top_p=top_p, seed=seed, sampling=sampling)
     payload = apply_grammar(build_payload(kwargs, native=False), grammar, native=False)
     payload = apply_thinking(payload, thinking)
+    payload = apply_model(payload, connection, model)
     raw, reasoning_field, _ = stream_chat(connection, conversation, payload)
     text, thought = split_thinking(raw)
     return text, combine(reasoning_field, thought)
@@ -59,8 +74,11 @@ class LlamaServerConnect:
             "optional": {
                 "model": ("STRING", {
                     "default": "auto",
-                    "tooltip": "Model name to request. 'auto' uses the first "
-                               "model the server reports.",
+                    "tooltip": "Default model for every node using this "
+                               "connection. 'auto' pins nothing and lets the "
+                               "server choose, which is right for a plain "
+                               "llama-server; in router mode name a model here "
+                               "or override it per node.",
                 }),
                 "auth": (AUTH_MODES, {
                     "default": "auto",
@@ -102,12 +120,12 @@ class LlamaServerConnect:
                                  password=password, auth=auth, timeout=timeout,
                                  model=model)
         if check_connection:
-            status = connection.health().get("status")
-            if status and status != "ok":
-                raise LlamaServerError(
-                    f"llama-server at {connection.base_url} is not ready "
-                    f"(status: {status}). It is probably still loading the model."
-                )
+            status = connection.probe()
+            if status not in ("ok", "unknown"):
+                # Routers load models on demand, so "not ready yet" is normal
+                # and must not fail the graph.
+                print(f"[comfyllama] llama-server at {connection.base_url} "
+                      f"reports status '{status}'; continuing anyway.")
         return (connection, connection.resolve_model())
 
 
@@ -130,6 +148,7 @@ class LlamaServerChat:
                 **generation_inputs(),
             },
             "optional": {
+                "model": model_input("this chat"),
                 "messages": ("LLAMA_MESSAGES", {
                     "tooltip": "Prior conversation turns, inserted before the prompt.",
                 }),
@@ -149,10 +168,10 @@ class LlamaServerChat:
         return is_changed_for_seed(seed)
 
     def generate(self, server, system, prompt, thinking, max_tokens, temperature,
-                 top_p, seed, messages=None, sampling=None, grammar=None):
+                 top_p, seed, model="", messages=None, sampling=None, grammar=None):
         conversation = _messages(system, prompt, messages)
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
-                              top_p, seed, sampling, grammar)
+                              top_p, seed, sampling, grammar, model)
         # The chain of thought is not fed back into the next turn.
         history = conversation + [{"role": "assistant", "content": text}]
         return (text, thought, history)
@@ -188,6 +207,7 @@ class LlamaServerVisionChat:
                     "default": 90, "min": 30, "max": 100,
                     "tooltip": "JPEG quality; 100 uploads lossless PNG.",
                 }),
+                "model": model_input("this request"),
                 "messages": ("LLAMA_MESSAGES",),
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
@@ -205,14 +225,14 @@ class LlamaServerVisionChat:
         return is_changed_for_seed(seed)
 
     def generate(self, server, image, system, prompt, thinking, max_tokens, temperature,
-                 top_p, seed, image_max_size=1024, image_quality=90, messages=None,
-                 sampling=None, grammar=None):
+                 top_p, seed, image_max_size=1024, image_quality=90, model="",
+                 messages=None, sampling=None, grammar=None):
         content = images_to_content(image, max_size=image_max_size,
                                     quality=image_quality)
         content.append({"type": "text", "text": prompt})
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
-                              top_p, seed, sampling, grammar)
+                              top_p, seed, sampling, grammar, model)
         history = conversation + [{"role": "assistant", "content": text}]
         return (text, thought, history)
 
@@ -230,6 +250,7 @@ class LlamaServerComplete:
                 **generation_inputs(),
             },
             "optional": {
+                "model": model_input("this completion"),
                 "cache_prompt": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Let the server reuse the KV cache when several "
@@ -251,10 +272,11 @@ class LlamaServerComplete:
         return is_changed_for_seed(seed)
 
     def generate(self, server, prompt, max_tokens, temperature, top_p, seed,
-                 cache_prompt=True, sampling=None, grammar=None):
+                 model="", cache_prompt=True, sampling=None, grammar=None):
         kwargs = sampler_kwargs(max_tokens=max_tokens, temperature=temperature,
                                 top_p=top_p, seed=seed, sampling=sampling)
         payload = apply_grammar(build_payload(kwargs, native=True), grammar, native=True)
+        payload = apply_model(payload, server, model)
         payload["cache_prompt"] = bool(cache_prompt)
         raw, _ = stream_completion(server, prompt, payload)
         return split_thinking(raw)
@@ -295,14 +317,23 @@ class LlamaServerInfo:
     DESCRIPTION = "Model name, context size and settings of a llama-server."
 
     def info(self, server):
-        props = server.props()
+        # A router in front of llama-server usually implements only the
+        # OpenAI-compatible routes, so /props may not be there at all.
+        try:
+            props = server.props()
+        except LlamaServerError:
+            props = {}
         settings = props.get("default_generation_settings") or {}
         n_ctx = int(settings.get("n_ctx") or props.get("n_ctx") or 0)
+        available = server.available_models()
         summary = {
             "base_url": server.base_url,
             "model": server.resolve_model() or props.get("model_path", ""),
             "n_ctx": n_ctx,
             "has_chat_template": bool(props.get("chat_template")),
-            "models": server.models(),
+            "models": available,
         }
+        if not summary["model"]:
+            summary["model_note"] = ("No model pinned; the server picks. Set one "
+                                     "on the connect node or per node to choose.")
         return (json.dumps(summary, indent=2), summary["model"], n_ctx)
