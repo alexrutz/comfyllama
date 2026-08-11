@@ -27,10 +27,10 @@ def model_input(where: str = "this request") -> tuple:
         "default": "",
         "multiline": False,
         "tooltip": f"Model to use for {where}. Overrides the connect node. "
-                   "Leave empty to use whatever that node is set to; with both "
-                   "empty no model is pinned and the server picks. Needed when "
-                   "llama-server runs in router mode with several models — "
-                   "'Server Info (llama-server)' lists the names.",
+                   "Leave empty to use whatever that node is set to. Press "
+                   "'fetch models' to pick from what the server actually "
+                   "serves, which is how you choose between them in router "
+                   "mode.",
     })
 
 
@@ -75,10 +75,9 @@ class LlamaServerConnect:
                 "model": ("STRING", {
                     "default": "auto",
                     "tooltip": "Default model for every node using this "
-                               "connection. 'auto' pins nothing and lets the "
-                               "server choose, which is right for a plain "
-                               "llama-server; in router mode name a model here "
-                               "or override it per node.",
+                               "connection. 'auto' asks the server what it "
+                               "serves and takes the first model it reports. "
+                               "Press 'fetch models' to pick a specific one.",
                 }),
                 "auth": (AUTH_MODES, {
                     "default": "auto",

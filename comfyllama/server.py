@@ -288,15 +288,18 @@ class LlamaServer:
     def resolve_model(self, override: str = "") -> str:
         """The model name to send with a request.
 
-        An empty result means "send no model field at all", which lets a plain
-        llama-server ignore it and a router pick its own default. The node's
-        own override wins over the one set on the connection.
+        The node's own override wins over the one set on the connection.  When
+        both say ``auto`` the server is asked what it serves and the first
+        model it reports is used, which is what a router needs — it dispatches
+        on this field.  Only a server that reports nothing leaves the field out.
         """
         for candidate in (override, self.model):
             candidate = (candidate or "").strip()
             if candidate and candidate.lower() not in AUTO_MODEL:
                 return candidate
-        return ""
+
+        available = self.available_models()
+        return available[0] if available else ""
 
     def probe(self) -> str:
         """Check the endpoint answers, and report what it said.

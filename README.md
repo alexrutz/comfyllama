@@ -210,15 +210,21 @@ connection, and **every generation node has its own `model` field that
 overrides it** — including one per preset on the prompt-preset node, so a
 router can serve a small model for one preset and a large one for another.
 
-Resolution order is: the node's `model` → the connect node's `model` → nothing
-at all. `auto` (or an empty field) means *nothing is pinned* and the server
-picks, which is what a plain single-model llama-server wants. In router mode,
-name the model you want; **Server Info (llama-server)** lists what the endpoint
-offers, and asking for a model it does not have produces an error that names
-the alternatives.
+Resolution order is: the node's `model` → the connect node's `model` →
+whatever the server reports. `auto` (or an empty field) means *ask the server*:
+it takes the first model `/v1/models` lists, so a single-model llama-server
+needs no configuration and a router still gets a model name to dispatch on.
+Only a server that reports no models at all leaves the field out of the
+request.
 
-The model list is fetched at most once per connection and never during
-generation.
+Every one of these nodes has a **`⟳ fetch models`** button. It polls the
+endpoint — reusing the URL and credentials from the connect node it is wired
+to — and shows what is actually being served; picking an entry writes it into
+that node's `model` field, and `auto` is offered as the way back. Asking for a
+model the server does not have produces an error that names the alternatives.
+
+The model list is fetched at most once per connection during a run, and never
+per request.
 
 A router in front of llama-server usually implements only the
 OpenAI-compatible routes, so `/health` may be missing and `/props`,

@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # Importing test_nodes also installs the ComfyUI stubs.
 from test_nodes import HAVE_IMAGING, sampling_args  # noqa: F401
 
+from comfyllama.api import probe_models
 from comfyllama.nodes import remote
 from comfyllama.nodes.generation import LlamaCppGrammar, LlamaCppSampling
 from comfyllama.server import (LlamaServer, LlamaServerError, apply_grammar,
@@ -334,11 +335,10 @@ class TestPayloads(unittest.TestCase):
 
 
 class TestConnectNode(ServerTestCase):
-    def test_auto_pins_no_model_and_still_checks_health(self):
+    def test_auto_takes_the_model_the_server_reports(self):
         connection, model = remote.LlamaServerConnect().connect(
             base_url=self.stub.url, timeout=10, check_connection=True)
-        # 'auto' lets the server choose rather than picking one for it.
-        self.assertEqual(model, "")
+        self.assertEqual(model, "stub-model")
         self.assertTrue(self.requests_to("/health"))
 
     def test_explicit_model_is_kept(self):
@@ -479,7 +479,7 @@ class TestRouterMode(ServerTestCase):
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]
         self.assertEqual(sent["model"], "stub-model")
 
-    def test_auto_everywhere_pins_nothing(self):
+    def test_auto_everywhere_uses_what_the_server_reports(self):
         for override in ("", "  ", "auto"):
             with self.subTest(model=override):
                 self.stub.state["requests"].clear()
@@ -487,7 +487,26 @@ class TestRouterMode(ServerTestCase):
                     self.connect(model="auto"), "", "hi", thinking="auto",
                     max_tokens=8, temperature=0.0, top_p=1.0, seed=0, model=override)
                 sent = self.requests_to("/v1/chat/completions")[0]["payload"]
-                self.assertNotIn("model", sent)
+                self.assertEqual(sent["model"], "stub-model")
+
+    def test_a_server_that_reports_nothing_leaves_the_field_out(self):
+        self.stub.state["models"] = []
+        remote.LlamaServerChat().generate(
+            self.connect(model="auto"), "", "hi", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0)
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertNotIn("model", sent)
+
+    def test_auto_asks_the_server_only_once(self):
+        connection = self.connect(model="auto")
+        for _ in range(3):
+            self.stub.state["requests"] = [
+                r for r in self.stub.state["requests"]
+                if r["path"] != "/v1/chat/completions"]
+            remote.LlamaServerChat().generate(
+                connection, "", "hi", thinking="auto", max_tokens=8,
+                temperature=0.0, top_p=1.0, seed=0)
+        self.assertEqual(len(self.requests_to("/v1/models")), 1)
 
     def test_native_completions_carry_the_model_too(self):
         # Routers dispatch on the body's model field whatever the path is.
@@ -522,6 +541,61 @@ class TestRouterMode(ServerTestCase):
         self.assertEqual(self.requests_to("/v1/models"), [])
 
 
+class TestModelPollingRoute(ServerTestCase):
+    """The API route behind the node's 'fetch models' button."""
+
+    def poll(self, **overrides):
+        payload = {"base_url": self.stub.url, "timeout": 5}
+        payload.update(overrides)
+        return probe_models(payload)
+
+    def test_it_lists_what_the_server_serves(self):
+        result = self.poll()
+        self.assertEqual(result["models"], ["stub-model", "big-model"])
+        self.assertNotIn("error", result)
+        self.assertEqual(result["base_url"], self.stub.url)
+
+    def test_it_passes_credentials_through(self):
+        self.poll(api_key="secret")
+        self.assertEqual(self.requests_to("/v1/models")[0]["authorization"],
+                         "Bearer secret")
+
+    def test_an_unreachable_server_returns_an_error_not_an_exception(self):
+        result = probe_models({"base_url": "http://127.0.0.1:1", "timeout": 2})
+        self.assertEqual(result["models"], [])
+        self.assertIn("127.0.0.1:1", result["error"])
+
+    def test_an_empty_url_is_reported_rather_than_raised(self):
+        result = probe_models({})
+        self.assertEqual(result["models"], [])
+        self.assertTrue(result["error"])
+
+    def test_the_poll_timeout_is_capped(self):
+        # A UI button must not hang for the generation timeout.
+        result = probe_models({"base_url": self.stub.url, "timeout": 9999})
+        self.assertEqual(result["models"], ["stub-model", "big-model"])
+
+    def test_a_bad_timeout_value_falls_back(self):
+        self.assertEqual(
+            probe_models({"base_url": self.stub.url, "timeout": "nonsense"})["models"],
+            ["stub-model", "big-model"])
+
+    def test_it_reports_a_rejected_credential(self):
+        self.stub.state["health_status"] = 401
+        original = StubHandler.do_GET
+
+        def unauthorized(handler):
+            handler._json({"error": {"message": "unauthorized"}}, 401)
+
+        StubHandler.do_GET = unauthorized
+        try:
+            result = self.poll()
+        finally:
+            StubHandler.do_GET = original
+        self.assertEqual(result["models"], [])
+        self.assertIn("401", result["error"])
+
+
 class TestChatNode(ServerTestCase):
     def test_streamed_chunks_are_joined_and_history_returned(self):
         text, thinking, messages = remote.LlamaServerChat().generate(
@@ -534,7 +608,7 @@ class TestChatNode(ServerTestCase):
 
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]
         self.assertTrue(sent["stream"])
-        self.assertNotIn("model", sent)  # nothing pinned, the server chooses
+        self.assertEqual(sent["model"], "stub-model")  # taken from the server
         self.assertEqual(sent["seed"], 5)
         self.assertEqual(sent["max_tokens"], 16)
         self.assertEqual([m["role"] for m in sent["messages"]], ["system", "user"])
@@ -671,11 +745,10 @@ class TestInfoAndTokenizeNodes(ServerTestCase):
 
     def test_info_lists_the_models_a_router_offers(self):
         info, model, n_ctx = remote.LlamaServerInfo().info(self.connect())
-        self.assertEqual(model, "")  # nothing pinned
+        self.assertEqual(model, "stub-model")  # what auto resolves to
         self.assertEqual(n_ctx, 8192)
         payload = json.loads(info)
         self.assertEqual(payload["models"], ["stub-model", "big-model"])
-        self.assertIn("model_note", payload)
 
     def test_info_reports_the_pinned_model(self):
         _, model, _ = remote.LlamaServerInfo().info(self.connect(model="big-model"))

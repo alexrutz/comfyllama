@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 
 // Nodes that return {"ui": {"text": [...]}} get a read-only textarea widget so
@@ -77,6 +78,118 @@ function applySamplingSwitches(node) {
 		}
 	}
 	node.setDirtyCanvas?.(true, false);
+}
+
+// --- Polling a llama-server for its model list -----------------------------
+// The list lives on the remote server, so it cannot come from INPUT_TYPES.
+// The button asks the backend route, which makes the same /v1/models request
+// the nodes make when they run.
+const CONNECT_NODE = "LlamaServerConnect";
+const MODEL_PICKER_NODES = new Set([
+	CONNECT_NODE,
+	"LlamaServerChat",
+	"LlamaServerVisionChat",
+	"LlamaServerComplete",
+	"LlamaServerPresetChat",
+]);
+
+function readWidget(node, name, fallback = "") {
+	const widget = node?.widgets?.find((w) => w.name === name);
+	return widget === undefined ? fallback : widget.value;
+}
+
+// The URL and credentials live on the connect node, which for a generation
+// node sits on the other end of its `server` input.
+function findConnectNode(node) {
+	if (node.type === CONNECT_NODE) {
+		return node;
+	}
+	const slot = node.inputs?.findIndex((input) => input.name === "server");
+	if (slot === undefined || slot < 0) {
+		return null;
+	}
+	let origin = node.getInputNode?.(slot);
+	// Step through reroute nodes, which pass the link straight through.
+	for (let hops = 0; origin && origin.type !== CONNECT_NODE && hops < 8; hops++) {
+		origin = origin.getInputNode?.(0);
+	}
+	return origin?.type === CONNECT_NODE ? origin : null;
+}
+
+async function pollModels(node) {
+	const connect = findConnectNode(node);
+	if (!connect) {
+		return { models: [], error: "Connect this node to a 'Connect to llama-server' node first." };
+	}
+	try {
+		const response = await api.fetchApi("/comfyllama/models", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				base_url: readWidget(connect, "base_url"),
+				auth: readWidget(connect, "auth", "auto"),
+				api_key: readWidget(connect, "api_key"),
+				username: readWidget(connect, "username"),
+				password: readWidget(connect, "password"),
+				timeout: 15,
+			}),
+		});
+		return await response.json();
+	} catch (error) {
+		return { models: [], error: String(error) };
+	}
+}
+
+// Which widget a picked model should be written into.
+function modelTargetWidget(node) {
+	if (node.type !== "LlamaServerPresetChat") {
+		return node.widgets?.find((w) => w.name === "model");
+	}
+	// On the preset node each preset has its own model; target the active one.
+	const activeWidget = node.widgets?.find((w) => w.name === "active");
+	const slotCount = Number(readWidget(node, "slot_count", 1)) || 1;
+	const names = presetNames(node, Math.min(slotCount, MAX_PRESET_SLOTS));
+	const index = names.indexOf(activeWidget?.value) + 1;
+	return node.widgets?.find((w) => w.name === `model_${index || 1}`);
+}
+
+async function showModelMenu(node, event) {
+	const target = modelTargetWidget(node);
+	if (!target) {
+		return;
+	}
+	const result = await pollModels(node);
+	const entries = result.models?.length
+		? ["auto", ...result.models]
+		: [`⚠ ${result.error || "no models reported"}`];
+
+	new LiteGraph.ContextMenu(entries, {
+		event,
+		title: result.models?.length ? `Models on ${result.base_url}` : "Could not list models",
+		callback: (value) => {
+			if (typeof value !== "string" || value.startsWith("⚠")) {
+				return;
+			}
+			target.value = value;
+			target.callback?.(value);
+			node.setDirtyCanvas?.(true, true);
+		},
+	});
+}
+
+function addModelPicker(nodeType) {
+	const onNodeCreated = nodeType.prototype.onNodeCreated;
+	nodeType.prototype.onNodeCreated = function () {
+		onNodeCreated?.apply(this, arguments);
+		this.addWidget(
+			"button",
+			"⟳ fetch models",
+			null,
+			(_value, _widget, node, _pos, event) => showModelMenu(node ?? this, event),
+			// Never serialised: it would shift every saved widget value.
+			{ serialize: false },
+		);
+	};
 }
 
 // --- Chat with Prompt Presets ---------------------------------------------
@@ -164,6 +277,15 @@ function applyPresetState(node) {
 	node.setSize([node.size[0], node.computeSize()[1]]);
 	node.setDirtyCanvas?.(true, true);
 }
+
+app.registerExtension({
+	name: "comfyllama.modelPicker",
+	async beforeRegisterNodeDef(nodeType, nodeData) {
+		if (MODEL_PICKER_NODES.has(nodeData.name)) {
+			addModelPicker(nodeType);
+		}
+	},
+});
 
 app.registerExtension({
 	name: "comfyllama.presetChat",
