@@ -124,6 +124,13 @@ between them with the `active` dropdown:
 - Outputs are `text`, `thinking` and `active` (the preset that ran, or
   `passthrough`), so the rest of the graph can tell what happened.
 
+Every per-slot field is an **optional** input. Hidden widgets do not survive
+ComfyUI's *export (API)*, so a required one would make an exported workflow
+fail validation with "Required input is missing (model_5)" before it ever
+reached the server. Anything absent from an API payload simply falls back:
+a missing name to `Preset N`, a missing model to the connect node and then to
+whatever the server reports.
+
 ## Empty latent by aspect ratio
 
 Pick a ratio (`1:1` and `2:3` lead the list) and a megapixel budget instead of

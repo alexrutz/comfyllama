@@ -217,6 +217,11 @@ function showWidget(widget, visible) {
 			widget.originalComputeSize = widget.computeSize;
 			widget.type = HIDDEN_TYPE;
 			widget.computeSize = () => [0, -4];
+			// Keep the value reachable for "export (API)": a frontend that
+			// does not recognise the swapped type may otherwise drop it. The
+			// node declares these inputs optional too, so a dropped value is
+			// survivable either way.
+			widget.serializeValue = () => widget.value;
 		}
 		if (widget.inputEl) {
 			widget.inputEl.style.display = "none";

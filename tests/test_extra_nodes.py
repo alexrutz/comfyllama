@@ -7,6 +7,7 @@ other remote nodes.
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 import unittest
 
@@ -315,6 +316,46 @@ class TestPresetChatNode(ServerTestCase):
             **self.widgets(active="Preset 2"))
         sent = self.requests_to("/v1/chat/completions")[0]["payload"]
         self.assertEqual(sent["model"], "stub-model")
+
+    def test_no_per_slot_widget_is_required(self):
+        """Regression: 'Required input is missing (model_5)' over the API.
+
+        The web extension hides the slots above slot_count, and a hidden
+        widget does not survive an "export (API)". Declaring any of them
+        required makes such a workflow fail validation before it runs.
+        """
+        required = self.NODE.INPUT_TYPES()["required"]
+        hideable = re.compile(r"^(name|system|model|extra)_\d+$")
+        offenders = [key for key in required if hideable.match(key)]
+        self.assertEqual(offenders, [])
+
+    def test_an_api_payload_missing_the_hidden_slots_still_runs(self):
+        # What ComfyUI sends when slots 4-6 are hidden: they are simply absent.
+        payload = {
+            "prompt": "a lighthouse", "active": "Preset 2", "slot_count": 3,
+            "thinking": "auto", "max_tokens": 64, "temperature": 0.2,
+            "top_p": 0.9, "seed": 0,
+        }
+        for index in range(1, 4):
+            payload[f"name_{index}"] = f"Preset {index}"
+            payload[f"system_{index}"] = f"system {index}"
+
+        text, _, active = self.NODE().generate(server=self.connect(), **payload)
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(active, "Preset 2")
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertEqual(sent["messages"][0]["content"], "system 2")
+        # model_2 was absent too, so it falls all the way back to the model the
+        # server reports.
+        self.assertEqual(sent["model"], "stub-model")
+
+    def test_the_bare_minimum_payload_runs(self):
+        # Only the required inputs, every optional one absent.
+        text, _, active = self.NODE().generate(
+            server=None, prompt="straight through", active="passthrough",
+            slot_count=3, thinking="auto", max_tokens=64, temperature=0.2,
+            top_p=0.9, seed=0)
+        self.assertEqual((text, active), ("straight through", "passthrough"))
 
     def test_thinking_is_split_out_like_the_other_chat_nodes(self):
         self.stub.state["pieces"] = ["<think>hmm</think>", "Answer."]

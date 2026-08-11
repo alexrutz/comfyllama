@@ -132,9 +132,14 @@ class LlamaServerPresetChat:
                 }),
                 "thinking": thinking_input(),
                 **generation_inputs(),
-                **_slot_inputs(),
             },
+            # The per-slot widgets are optional on purpose. The web extension
+            # hides the slots above slot_count, and a hidden widget does not
+            # survive an "export (API)", so declaring them required would make
+            # such a workflow fail validation with "Required input is missing".
+            # Every one of them has a default here instead.
             "optional": {
+                **_slot_inputs(),
                 "extra_separator": ("STRING", {
                     "default": "\\n\\n",
                     "tooltip": "Put between the prompt and the extra prompt. "
