@@ -596,6 +596,36 @@ class TestGeneration(unittest.TestCase):
             top_p=1.0, seed=0)
         self.assertEqual((text, thinking), ("answer", "deliberating"))
 
+    def test_chat_sends_a_connected_image_as_content_parts(self):
+        if not HAVE_IMAGING:
+            self.skipTest("numpy and Pillow are required")
+        import numpy as np
+
+        model, llm = fake_model(["ok"])
+        model.vision = True
+        generation.LlamaCppChat().generate(
+            model, "sys", "what is this?", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0,
+            image=np.zeros((1, 8, 8, 3), dtype=np.float32))
+        content = llm.calls[0]["messages"][-1]["content"]
+        self.assertEqual(content[0]["type"], "image_url")
+        self.assertEqual(content[-1], {"type": "text", "text": "what is this?"})
+
+    def test_chat_without_an_image_stays_plain_text(self):
+        model, llm = fake_model(["ok"])
+        generation.LlamaCppChat().generate(
+            model, "sys", "hello", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0)
+        self.assertEqual(llm.calls[0]["messages"][-1]["content"], "hello")
+
+    def test_an_image_on_a_text_only_model_is_refused(self):
+        model, _ = fake_model(["ok"])  # loaded without a projector
+        with self.assertRaises(ValueError) as ctx:
+            generation.LlamaCppChat().generate(
+                model, "", "hi", thinking="auto", max_tokens=8, temperature=0.0,
+                top_p=1.0, seed=0, image=object())
+        self.assertIn("multimodal projector", str(ctx.exception))
+
     def test_random_seed_busts_the_comfyui_cache(self):
         self.assertNotEqual(generation.LlamaCppChat.IS_CHANGED(seed=-1),
                             generation.LlamaCppChat.IS_CHANGED(seed=-1))

@@ -11,14 +11,13 @@ import json
 from typing import Tuple
 
 from ..backend import sampler_kwargs
-from ..images import images_to_content
 from ..reasoning import combine, split_thinking
 from ..server import (AUTH_MODES, LlamaServer, LlamaServerError, apply_grammar,
                       apply_model, apply_thinking, build_payload, stream_chat,
                       stream_completion)
-from .common import (CATEGORY_SERVER, generation_inputs, is_changed_for_seed,
-                     thinking_input)
-from .generation import _messages
+from .common import (CATEGORY_SERVER, generation_inputs, image_inputs,
+                     is_changed_for_seed, thinking_input)
+from .generation import _messages, user_content
 
 
 def model_input(where: str = "this request") -> tuple:
@@ -153,6 +152,7 @@ class LlamaServerChat:
                 }),
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
+                **image_inputs(),
             },
         }
 
@@ -160,15 +160,18 @@ class LlamaServerChat:
     RETURN_NAMES = ("text", "thinking", "messages")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_SERVER
-    DESCRIPTION = "Chat with a remote llama-server."
+    DESCRIPTION = "Chat with a remote llama-server. Accepts images too."
 
     @classmethod
     def IS_CHANGED(cls, seed=0, **kwargs):
         return is_changed_for_seed(seed)
 
     def generate(self, server, system, prompt, thinking, max_tokens, temperature,
-                 top_p, seed, model="", messages=None, sampling=None, grammar=None):
-        conversation = _messages(system, prompt, messages)
+                 top_p, seed, model="", messages=None, sampling=None, grammar=None,
+                 image=None, image_max_size=1024, image_quality=90):
+        content = user_content(prompt, image, max_size=image_max_size,
+                               quality=image_quality)
+        conversation = _messages(system, prompt, messages, content=content)
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
                               top_p, seed, sampling, grammar, model)
         # The chain of thought is not fed back into the next turn.
@@ -226,9 +229,8 @@ class LlamaServerVisionChat:
     def generate(self, server, image, system, prompt, thinking, max_tokens, temperature,
                  top_p, seed, image_max_size=1024, image_quality=90, model="",
                  messages=None, sampling=None, grammar=None):
-        content = images_to_content(image, max_size=image_max_size,
-                                    quality=image_quality)
-        content.append({"type": "text", "text": prompt})
+        content = user_content(prompt, image, max_size=image_max_size,
+                               quality=image_quality)
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
                               top_p, seed, sampling, grammar, model)

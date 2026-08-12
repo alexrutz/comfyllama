@@ -357,6 +357,19 @@ class TestPresetChatNode(ServerTestCase):
             top_p=0.9, seed=0)
         self.assertEqual((text, active), ("straight through", "passthrough"))
 
+    @unittest.skipUnless(HAVE_IMAGING, "numpy and Pillow are required")
+    def test_a_connected_image_reaches_the_active_preset(self):
+        import numpy as np
+
+        self.NODE().generate(
+            server=self.connect(),
+            image=np.zeros((1, 8, 8, 3), dtype=np.float32),
+            **self.widgets(active="Preset 2", extra_2="in ink"))
+        content = self.requests_to("/v1/chat/completions")[0]["payload"]["messages"][-1]["content"]
+        self.assertEqual(content[0]["type"], "image_url")
+        # The extra prompt is still appended, inside the text part.
+        self.assertEqual(content[-1]["text"], "a lighthouse\n\nin ink")
+
     def test_thinking_is_split_out_like_the_other_chat_nodes(self):
         self.stub.state["pieces"] = ["<think>hmm</think>", "Answer."]
         text, thinking, _ = self.NODE().generate(
@@ -404,8 +417,27 @@ class TestPresetLazyEvaluation(unittest.TestCase):
     def test_the_lazy_inputs_are_declared(self):
         inputs = LlamaServerPresetChat.INPUT_TYPES()
         self.assertTrue(inputs["required"]["server"][1]["lazy"])
+        self.assertTrue(inputs["optional"]["image"][1]["lazy"])
         for index in range(1, MAX_SLOTS + 1):
             self.assertTrue(inputs["optional"][f"extra_{index}"][1]["lazy"])
+
+    def test_passthrough_does_not_pull_in_the_image(self):
+        self.assertEqual(
+            self.node.check_lazy_status(active="passthrough", slot_count=3,
+                                        server=None, image=None, **self.slots),
+            [])
+
+    def test_an_active_preset_pulls_in_the_image(self):
+        needed = self.node.check_lazy_status(
+            active="Preset 1", slot_count=3, server=None, extra_1=None, image=None,
+            **self.slots)
+        self.assertEqual(needed, ["server", "extra_1", "image"])
+
+    def test_an_unconnected_image_is_never_requested(self):
+        # An input that is not wired up is absent from the kwargs entirely.
+        needed = self.node.check_lazy_status(
+            active="Preset 1", slot_count=3, server=object(), **self.slots)
+        self.assertEqual(needed, [])
 
 
 if __name__ == "__main__":

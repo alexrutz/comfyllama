@@ -756,6 +756,51 @@ class TestInfoAndTokenizeNodes(ServerTestCase):
 
 
 @unittest.skipUnless(HAVE_IMAGING, "numpy and Pillow are required")
+class TestChatNodeImages(ServerTestCase):
+    """The plain chat node is multimodal too: the image input is optional."""
+
+    def image(self):
+        import numpy as np
+
+        return np.zeros((1, 8, 8, 3), dtype=np.float32)
+
+    def test_a_connected_image_becomes_content_parts(self):
+        text, _, messages = remote.LlamaServerChat().generate(
+            self.connect(), "sys", "what is this?", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0, image=self.image())
+        self.assertEqual(text, "Hello world")
+        content = self.requests_to("/v1/chat/completions")[0]["payload"]["messages"][-1]["content"]
+        self.assertEqual(content[0]["type"], "image_url")
+        self.assertEqual(content[-1], {"type": "text", "text": "what is this?"})
+        # The history keeps the multimodal turn so a follow-up still has it.
+        self.assertIsInstance(messages[-2]["content"], list)
+
+    def test_without_an_image_the_turn_stays_plain_text(self):
+        remote.LlamaServerChat().generate(
+            self.connect(), "sys", "hello", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0)
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertEqual(sent["messages"][-1]["content"], "hello")
+
+    def test_a_batch_is_sent_as_several_parts(self):
+        import numpy as np
+
+        remote.LlamaServerChat().generate(
+            self.connect(), "", "compare these", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0,
+            image=np.zeros((3, 8, 8, 3), dtype=np.float32))
+        content = self.requests_to("/v1/chat/completions")[0]["payload"]["messages"][-1]["content"]
+        self.assertEqual(sum(1 for part in content if part["type"] == "image_url"), 3)
+
+    def test_the_encoding_controls_apply(self):
+        remote.LlamaServerChat().generate(
+            self.connect(), "", "hi", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0, image=self.image(), image_quality=100)
+        content = self.requests_to("/v1/chat/completions")[0]["payload"]["messages"][-1]["content"]
+        self.assertTrue(content[0]["image_url"]["url"].startswith("data:image/png"))
+
+
+@unittest.skipUnless(HAVE_IMAGING, "numpy and Pillow are required")
 class TestVisionNode(ServerTestCase):
     def test_images_are_uploaded_as_data_uris(self):
         import numpy as np

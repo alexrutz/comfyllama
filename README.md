@@ -17,9 +17,9 @@ rebuilding the graph.
 | --- | --- |
 | **Load LLM (llama.cpp)** | Loads a GGUF text model. GPU offload, context size, threads, chat template. |
 | **Load Vision LLM (llama.cpp)** | Loads a GGUF model plus its `mmproj` projector (LLaVA, MiniCPM-V, moondream, …). |
-| **Chat (llama.cpp)** | System prompt, user prompt and a thinking switch. Returns `text`, `thinking` and the updated history. |
+| **Chat (llama.cpp)** | System prompt, user prompt, a thinking switch and an optional image. Returns `text`, `thinking` and the updated history. |
 | **Text Completion (llama.cpp)** | Raw completion, no chat template and no system prompt. |
-| **Vision Chat (llama.cpp)** | Sends an `IMAGE` (or a whole batch) plus a system and user prompt to a multimodal model. |
+| **Vision Chat (llama.cpp)** | The same as Chat, with the image required rather than optional. |
 | **Sampler Settings (llama.cpp)** | top_k, min_p, typical_p, repetition/presence/frequency penalties, Mirostat, stop sequences — each switched on individually. |
 | **Grammar / JSON Output (llama.cpp)** | Constrains output to JSON, a JSON schema, or a custom GBNF grammar. |
 | **Chat Message (llama.cpp)** | Builds a conversation for multi-turn chats or few-shot prompting. |
@@ -34,9 +34,9 @@ rebuilding the graph.
 | Node | What it does |
 | --- | --- |
 | **Connect to llama-server** | URL, timeout, default model and authentication (bearer token or user/password). Probes the endpoint so a wrong URL fails immediately, while tolerating router front ends. |
-| **Chat (llama-server)** | System prompt, user prompt and a thinking switch, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
-| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, each with its own model, switchable, with a passthrough that skips the model. |
-| **Vision Chat (llama-server)** | Uploads an `IMAGE` batch to a server started with `--mmproj`. |
+| **Chat (llama-server)** | System prompt, user prompt, a thinking switch and an optional image, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
+| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, each with its own model, switchable, with a passthrough that skips the model. Takes an image too. |
+| **Vision Chat (llama-server)** | The same as Chat, with the image required rather than optional. |
 | **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
 | **Token Count (llama-server)** | Counts tokens via `/tokenize`. |
 | **Server Info (llama-server)** | Model name, context size and available models as JSON. |
@@ -155,6 +155,29 @@ raises the rounding to 16 px even when `divisible_by` is 8. A coarser
 `divisible_by` still wins. Krea 2 is documented as covering 1K to 2K, i.e.
 `megapixels` between 1.0 and 2.0; at 1.0 the presets come out as 1024x1024
 (1:1), 832x1248 (2:3) and 1360x768 (16:9).
+
+## Images
+
+Every chat node takes an optional **`image`** input — in-process, remote and the
+preset node alike. Connect one and the turn is sent as an OpenAI-style content
+list (images first, prompt last) instead of plain text; leave it unconnected and
+nothing about the request changes. A whole `IMAGE` batch is sent as several
+parts, so you can ask a model to compare frames.
+
+`image_max_size` scales the longest edge before upload (0 disables it) and
+`image_quality` picks JPEG quality, or lossless PNG at 100.
+
+What has to match is the model:
+
+- **In-process**: load it with **Load Vision LLM (llama.cpp)** so a projector is
+  attached. Connecting an image to a model loaded by the plain loader fails with
+  a message saying so rather than sending something the model cannot read.
+- **llama-server**: start it with `--mmproj`, or point the node at a multimodal
+  model in router mode. The server reports the error if it cannot see.
+
+The two **Vision Chat** nodes are now just these nodes with the image required,
+kept because existing workflows use them. On the preset node the image is lazy
+like everything else, so `passthrough` never runs the branch that produces it.
 
 ## Prompts and reasoning models
 

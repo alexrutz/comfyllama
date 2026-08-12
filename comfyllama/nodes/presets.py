@@ -5,9 +5,9 @@ one to run, or ``passthrough`` to hand the prompt straight to the output
 without contacting the server at all.  Each slot has its own optional extra
 prompt input, for system prompts that expect two separate instructions.
 
-The extra inputs and the server connection are declared lazy, so the branches
-belonging to inactive slots are never executed — in passthrough mode nothing
-upstream of this node runs on the LLM side.
+The extra inputs, the image and the server connection are declared lazy, so the
+branches belonging to inactive slots are never executed — in passthrough mode
+nothing upstream of this node runs on the LLM side.
 """
 
 from __future__ import annotations
@@ -15,8 +15,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..backend import decode_escapes
-from .common import CATEGORY_SERVER, generation_inputs, is_changed_for_seed, thinking_input
-from .generation import _messages
+from .common import (CATEGORY_SERVER, generation_inputs, image_inputs,
+                     is_changed_for_seed, thinking_input)
+from .generation import _messages, user_content
 from .remote import _chat, model_input
 
 MAX_SLOTS = 6
@@ -148,6 +149,8 @@ class LlamaServerPresetChat:
                 **_extra_inputs(),
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
+                # Lazy like the rest: passthrough must not run an image branch.
+                **image_inputs(lazy=True),
             },
         }
 
@@ -181,14 +184,15 @@ class LlamaServerPresetChat:
         needed = []
         if kwargs.get("server") is None:
             needed.append("server")
-        extra = f"extra_{index}"
-        if extra in kwargs and kwargs.get(extra) is None:
-            needed.append(extra)
+        for name in (f"extra_{index}", "image"):
+            if name in kwargs and kwargs.get(name) is None:
+                needed.append(name)
         return needed
 
     def generate(self, server, prompt, active, slot_count, thinking, max_tokens,
                  temperature, top_p, seed, extra_separator="\\n\\n", sampling=None,
-                 grammar=None, **slots):
+                 grammar=None, image=None, image_max_size=1024, image_quality=90,
+                 **slots):
         names = slot_names(slots)
         index = resolve_slot(active, names, slot_count)
 
@@ -204,7 +208,9 @@ class LlamaServerPresetChat:
 
         system = str(slots.get(f"system_{index}") or "")
         full_prompt = join_prompt(prompt, slots.get(f"extra_{index}"), extra_separator)
-        conversation = _messages(system, full_prompt, None)
+        content = user_content(full_prompt, image, max_size=image_max_size,
+                               quality=image_quality)
+        conversation = _messages(system, full_prompt, None, content=content)
         # Each preset may name its own model, which is the point of a router.
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
                               top_p, seed, sampling, grammar,

@@ -8,7 +8,31 @@ from typing import Any, Dict, List, Tuple
 from .. import backend, reasoning
 from ..images import images_to_content
 from .common import (CATEGORY, CATEGORY_ADVANCED, generation_inputs,
-                     is_changed_for_seed, thinking_input)
+                     image_inputs, is_changed_for_seed, thinking_input)
+
+
+def user_content(prompt: str, image=None, *, max_size: int = 1024,
+                 quality: int = 90):
+    """The user turn's content.
+
+    ``None`` when no image was connected, which leaves the turn as plain text;
+    otherwise the OpenAI-style parts list, images first, prompt last.
+    """
+    if image is None:
+        return None
+    content = images_to_content(image, max_size=max_size, quality=quality)
+    content.append({"type": "text", "text": prompt})
+    return content
+
+
+def require_vision_model(model, image) -> None:
+    """In-process models can only see images if a projector was loaded."""
+    if image is not None and not model.vision:
+        raise ValueError(
+            "An image is connected, but this model was loaded without a "
+            "multimodal projector. Load it with 'Load Vision LLM (llama.cpp)' "
+            "instead, or disconnect the image."
+        )
 
 
 def _messages(system: str, prompt: str, history, content=None) -> List[Dict[str, Any]]:
@@ -91,6 +115,7 @@ class LlamaCppChat:
                 }),
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
+                **image_inputs(),
             },
         }
 
@@ -105,8 +130,12 @@ class LlamaCppChat:
         return is_changed_for_seed(seed)
 
     def generate(self, model, system, prompt, thinking, max_tokens, temperature, top_p,
-                 seed, messages=None, sampling=None, grammar=None):
-        conversation = _messages(system, prompt, messages)
+                 seed, messages=None, sampling=None, grammar=None, image=None,
+                 image_max_size=1024, image_quality=90):
+        require_vision_model(model, image)
+        content = user_content(prompt, image, max_size=image_max_size,
+                               quality=image_quality)
+        conversation = _messages(system, prompt, messages, content=content)
         text, thought = _run_chat(model, conversation, thinking, max_tokens,
                                   temperature, top_p, seed, sampling, grammar)
         # The chain of thought is not fed back into the next turn.
@@ -185,13 +214,9 @@ class LlamaCppVisionChat:
     def generate(self, model, image, system, prompt, thinking, max_tokens, temperature,
                  top_p, seed, image_max_size=1024, image_quality=90, messages=None,
                  sampling=None, grammar=None):
-        if not model.vision:
-            raise ValueError(
-                "This model was loaded without a multimodal projector. Use the "
-                "'Load Vision LLM (llama.cpp)' node for image input."
-            )
-        content = images_to_content(image, max_size=image_max_size, quality=image_quality)
-        content.append({"type": "text", "text": prompt})
+        require_vision_model(model, image)
+        content = user_content(prompt, image, max_size=image_max_size,
+                               quality=image_quality)
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _run_chat(model, conversation, thinking, max_tokens,
                                   temperature, top_p, seed, sampling, grammar)

@@ -66,6 +66,33 @@ def thinking_input() -> Any:
     })
 
 
+def image_inputs(lazy: bool = False) -> Dict[str, Any]:
+    """Optional image input plus its encoding controls.
+
+    Any chat node accepts images; whether they are understood depends on the
+    model behind it having a multimodal projector.
+    """
+    image: Dict[str, Any] = {
+        "tooltip": "Optional. Sends the image (or the whole batch) with the "
+                   "prompt. Needs a multimodal model: the vision loader "
+                   "in-process, or llama-server started with --mmproj.",
+    }
+    if lazy:
+        image["lazy"] = True
+    return {
+        "image": ("IMAGE", image),
+        "image_max_size": ("INT", {
+            "default": 1024, "min": 0, "max": 4096, "step": 64,
+            "tooltip": "Longest edge the image is scaled to before it is sent. "
+                       "0 disables resizing. Ignored without an image.",
+        }),
+        "image_quality": ("INT", {
+            "default": 90, "min": 30, "max": 100,
+            "tooltip": "JPEG quality; 100 sends lossless PNG.",
+        }),
+    }
+
+
 def generation_inputs() -> Dict[str, Any]:
     """The handful of sampling controls that belong on every generation node."""
     return {
